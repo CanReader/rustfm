@@ -1,0 +1,10 @@
+target/
+**/*.rs.bk
+
+.DS_Store
+*.swp
+*.swo
+
+CLAUDE.md
+.claude/
+.claude-code/

@@ -1,0 +1,30 @@
+[package]
+name = "rustfm"
+version = "0.1.0"
+edition = "2021"
+description = "A fast, modern terminal file manager  written in Rust"
+license = "MIT"
+
+[dependencies]
+ratatui = "0.29"
+crossterm = "0.28"
+anyhow = "1"
+thiserror = "2"
+serde = { version = "1", features = ["derive"] }
+toml = "0.8"
+dirs = "5"
+walkdir = "2"
+chrono = "0.4"
+humansize = "2"
+unicode-width = "0.2"
+open = "5"
+mime_guess = "2"
+trash = "5"
+ratatui-image = "4"
+image = "0.25"
+
+[profile.release]
+lto = true
+codegen-units = 1
+strip = true
+opt-level = 3
