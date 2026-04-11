@@ -36,6 +36,7 @@ pub enum PromptKind {
     GoTo,
     Bookmark,
     CommitMsg,
+    GitCmd,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -281,6 +282,43 @@ impl App {
                 self.refresh()?;
             }
             Err(e) => self.set_status(format!("discard failed: {e}"), true),
+        }
+        Ok(())
+    }
+
+    pub fn run_git_cmd(&mut self, raw: &str) -> Result<()> {
+        let trimmed = raw.trim();
+        if trimmed.is_empty() {
+            return Ok(());
+        }
+        let args: Vec<String> = shell_words(trimmed);
+        if args.is_empty() {
+            return Ok(());
+        }
+        let cwd = self
+            .git
+            .as_ref()
+            .map(|g| g.root.clone())
+            .unwrap_or_else(|| self.cwd.clone());
+        match git::run_raw(&cwd, &args) {
+            Ok(lines) => {
+                let summary = format!("git {}", trimmed);
+                self.preview = Preview::Text(if lines.is_empty() {
+                    vec!["(no output)".into()]
+                } else {
+                    lines
+                });
+                self.set_status(summary, false);
+                let _ = self.reload_git_only();
+            }
+            Err(e) => self.set_status(format!("git failed: {e}"), true),
+        }
+        Ok(())
+    }
+
+    fn reload_git_only(&mut self) -> Result<()> {
+        if self.config.git_integration {
+            self.reload_git();
         }
         Ok(())
     }
@@ -737,6 +775,36 @@ impl App {
             }
         }
     }
+}
+
+fn shell_words(s: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut cur = String::new();
+    let mut in_single = false;
+    let mut in_double = false;
+    let mut escape = false;
+    for c in s.chars() {
+        if escape {
+            cur.push(c);
+            escape = false;
+            continue;
+        }
+        match c {
+            '\\' if !in_single => escape = true,
+            '\'' if !in_double => in_single = !in_single,
+            '"' if !in_single => in_double = !in_double,
+            c if c.is_whitespace() && !in_single && !in_double => {
+                if !cur.is_empty() {
+                    out.push(std::mem::take(&mut cur));
+                }
+            }
+            c => cur.push(c),
+        }
+    }
+    if !cur.is_empty() {
+        out.push(cur);
+    }
+    out
 }
 
 fn expand_tilde(input: &str) -> String {

@@ -58,6 +58,10 @@ fn handle_normal(
             }
             KeyCode::Char('d') => app.toggle_diff_mode(),
             KeyCode::Char('r') => app.refresh()?,
+            KeyCode::Char('g') | KeyCode::Char(':') => {
+                app.input.clear();
+                app.mode = Mode::Prompt(PromptKind::GitCmd);
+            }
             _ => {}
         }
         return Ok(());
@@ -281,6 +285,7 @@ fn handle_prompt(app: &mut App, key: KeyEvent, kind: PromptKind) -> Result<()> {
                 PromptKind::GoTo => app.goto_path(&input)?,
                 PromptKind::Bookmark => app.jump_bookmark(&input)?,
                 PromptKind::CommitMsg => app.git_commit(&input)?,
+                PromptKind::GitCmd => app.run_git_cmd(&input)?,
             }
         }
         KeyCode::Backspace => {

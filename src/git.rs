@@ -439,6 +439,35 @@ pub fn diff_for(root: &Path, path: &Path) -> Result<Vec<String>> {
     Ok(lines)
 }
 
+pub fn run_raw(cwd: &Path, args: &[String]) -> Result<Vec<String>> {
+    if args.is_empty() {
+        bail!("empty git command");
+    }
+    let out = Command::new("git")
+        .arg("-C")
+        .arg(cwd)
+        .args(args)
+        .output()
+        .context("git")?;
+    let mut lines: Vec<String> = Vec::new();
+    for l in String::from_utf8_lossy(&out.stdout).lines() {
+        lines.push(l.to_string());
+    }
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    if !stderr.trim().is_empty() {
+        if !lines.is_empty() {
+            lines.push(String::new());
+        }
+        for l in stderr.lines() {
+            lines.push(l.to_string());
+        }
+    }
+    if !out.status.success() && lines.is_empty() {
+        bail!("git {} failed", args.join(" "));
+    }
+    Ok(lines)
+}
+
 pub fn recent_log(root: &Path, path: Option<&Path>, limit: u32) -> Vec<String> {
     let mut cmd = Command::new("git");
     cmd.arg("-C")

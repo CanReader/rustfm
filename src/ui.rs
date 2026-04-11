@@ -468,6 +468,7 @@ fn draw_footer(f: &mut Frame, area: Rect, app: &App) {
                 PromptKind::GoTo => "cd:",
                 PromptKind::Bookmark => "bookmark:",
                 PromptKind::CommitMsg => "commit:",
+                PromptKind::GitCmd => "git:",
             };
             Line::from(vec![
                 Span::styled(label, Style::default().fg(pal.info_size)),
