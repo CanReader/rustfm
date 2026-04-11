@@ -145,11 +145,7 @@ fn handle_normal(
         }
         KeyCode::Char('a') => {
             app.input.clear();
-            app.mode = Mode::Prompt(PromptKind::NewFile);
-        }
-        KeyCode::Char('A') => {
-            app.input.clear();
-            app.mode = Mode::Prompt(PromptKind::NewDir);
+            app.mode = Mode::Prompt(PromptKind::New);
         }
         KeyCode::Char('.') => app.toggle_hidden()?,
         KeyCode::Char('/') => {
@@ -298,8 +294,7 @@ fn handle_prompt(app: &mut App, key: KeyEvent, kind: PromptKind) -> Result<()> {
             }
             match kind {
                 PromptKind::Rename => app.rename_current(&input)?,
-                PromptKind::NewFile => app.make_file(&input)?,
-                PromptKind::NewDir => app.make_dir(&input)?,
+                PromptKind::New => app.make_entry(&input)?,
                 PromptKind::GoTo => app.goto_path(&input)?,
                 PromptKind::Bookmark => app.jump_bookmark(&input)?,
                 PromptKind::CommitMsg => app.git_commit(&input)?,

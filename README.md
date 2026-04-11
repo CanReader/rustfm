@@ -4,6 +4,14 @@ A fast, modern terminal file manager written in Rust.
 
 Rustfm is a keyboard-driven TUI file manager built around a three-pane Miller-column layout. It aims to be responsive on large directories, comfortable for everyday navigation, and flexible enough to replace a graphical file manager for users who live in the terminal. It targets developers, system administrators, and power users who want a single tool for browsing, previewing, and operating on files without leaving the shell.
 
+## Screenshots
+
+![Rustfm main view](Screenshots/Screenshot1.png)
+
+![Rustfm git integration](Screenshots/Screenshot2.png)
+
+![Rustfm preview pane](Screenshots/Screenshot3.png)
+
 ## Features
 
 ### Layout and previews
@@ -86,8 +94,7 @@ The positional `PATH` argument is optional and may be a directory or a file. If 
 | `p` | Paste into current directory |
 | `D` | Delete (to trash, or hard-delete if `use_trash=false`) |
 | `r` | Rename current entry |
-| `a` | Create new file |
-| `A` | Create new directory |
+| `a` | Create new entry — ending the name with `/` creates a directory, otherwise a file |
 
 ### Modes and overlays
 | Key | Action |

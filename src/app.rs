@@ -31,8 +31,7 @@ pub enum Mode {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PromptKind {
     Rename,
-    NewFile,
-    NewDir,
+    New,
     GoTo,
     Bookmark,
     CommitMsg,
@@ -338,45 +337,49 @@ impl App {
     }
 
     fn run_shell_cmd(&mut self, cmd: &str) -> Result<()> {
-        use crossterm::{
-            event::{self as cevent, DisableMouseCapture, EnableMouseCapture, Event},
-            execute,
-            terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
-        };
-        use std::io::Write;
         use std::process::Command;
 
-        let _ = disable_raw_mode();
-        let _ = execute!(std::io::stdout(), LeaveAlternateScreen, DisableMouseCapture);
-        println!("\n$ {cmd}");
-        let _ = std::io::stdout().flush();
-
-        let status = Command::new("sh")
+        let out = Command::new("sh")
             .arg("-c")
             .arg(cmd)
             .current_dir(&self.cwd)
-            .status();
+            .output();
 
-        let label = match &status {
-            Ok(s) if s.success() => format!("ran: {cmd}"),
-            Ok(s) => format!("exit {}: {cmd}", s.code().unwrap_or(-1)),
-            Err(e) => format!("spawn failed: {e}"),
-        };
-
-        println!("\n[press any key to return]");
-        let _ = std::io::stdout().flush();
-        let _ = enable_raw_mode();
-        loop {
-            if let Ok(true) = cevent::poll(std::time::Duration::from_millis(500)) {
-                if let Ok(Event::Key(_)) = cevent::read() {
-                    break;
+        match out {
+            Ok(o) => {
+                let mut lines: Vec<String> = Vec::new();
+                lines.push(format!("$ {cmd}"));
+                lines.push(String::new());
+                for l in String::from_utf8_lossy(&o.stdout).lines() {
+                    lines.push(l.to_string());
                 }
+                let stderr = String::from_utf8_lossy(&o.stderr);
+                if !stderr.trim().is_empty() {
+                    if lines.last().map(|l| !l.is_empty()).unwrap_or(false) {
+                        lines.push(String::new());
+                    }
+                    for l in stderr.lines() {
+                        lines.push(l.to_string());
+                    }
+                }
+                if lines.len() == 2 {
+                    lines.push("(no output)".into());
+                }
+                let ok = o.status.success();
+                let code = o.status.code().unwrap_or(-1);
+                self.preview = Preview::Text(lines);
+                let label = if ok {
+                    format!("ran: {cmd}")
+                } else {
+                    format!("exit {code}: {cmd}")
+                };
+                self.set_status(label, !ok);
+                let _ = self.reload_git_only();
+            }
+            Err(e) => {
+                self.set_status(format!("spawn failed: {e}"), true);
             }
         }
-        let _ = execute!(std::io::stdout(), EnterAlternateScreen, EnableMouseCapture);
-
-        self.set_status(label, status.as_ref().map(|s| !s.success()).unwrap_or(true));
-        self.refresh()?;
         Ok(())
     }
 
@@ -667,26 +670,27 @@ impl App {
         Ok(())
     }
 
-    pub fn make_dir(&mut self, name: &str) -> Result<()> {
-        let dst = self.cwd.join(name);
-        match fs_ops::create_dir(&dst) {
-            Ok(_) => {
-                self.refresh()?;
-                self.set_status(format!("mkdir {name}"), false);
-            }
-            Err(e) => self.set_status(format!("mkdir failed: {e}"), true),
+    pub fn make_entry(&mut self, raw: &str) -> Result<()> {
+        let is_dir = raw.ends_with('/');
+        let name = raw.trim_end_matches('/');
+        if name.is_empty() {
+            return Ok(());
         }
-        Ok(())
-    }
-
-    pub fn make_file(&mut self, name: &str) -> Result<()> {
         let dst = self.cwd.join(name);
-        match fs_ops::create_file(&dst) {
-            Ok(_) => {
+        let result = if is_dir {
+            fs_ops::create_dir(&dst).map(|_| format!("mkdir {name}/"))
+        } else {
+            fs_ops::create_file(&dst).map(|_| format!("touch {name}"))
+        };
+        match result {
+            Ok(msg) => {
                 self.refresh()?;
-                self.set_status(format!("touch {name}"), false);
+                self.set_status(msg, false);
             }
-            Err(e) => self.set_status(format!("touch failed: {e}"), true),
+            Err(e) => {
+                let verb = if is_dir { "mkdir" } else { "touch" };
+                self.set_status(format!("{verb} failed: {e}"), true);
+            }
         }
         Ok(())
     }

@@ -437,7 +437,7 @@ fn draw_footer(f: &mut Frame, area: Rect, app: &App) {
                 Line::from(Span::styled(s.text.clone(), Style::default().fg(color)))
             } else {
                 Line::from(Span::styled(
-                    "q quit  ←↓↑→ nav  <space> sel  y/d/p  D del  r rename  a/A new  . hidden  / search  f filter  C-f fuzzy  o sort  z git(s/u/x/c/d/r)",
+                    "q quit  ←↓↑→ nav  <space> sel  y/d/p  D del  r rename  a new  . hidden  / search  f filter  C-f fuzzy  o sort  z git(s/u/x/c/d/r)",
                     Style::default().fg(pal.info_dim),
                 ))
             }
@@ -463,8 +463,7 @@ fn draw_footer(f: &mut Frame, area: Rect, app: &App) {
         Mode::Prompt(kind) => {
             let label = match kind {
                 PromptKind::Rename => "rename:",
-                PromptKind::NewFile => "new file:",
-                PromptKind::NewDir => "new dir:",
+                PromptKind::New => "new (end with / for dir):",
                 PromptKind::GoTo => "cd:",
                 PromptKind::Bookmark => "bookmark:",
                 PromptKind::CommitMsg => "commit:",
