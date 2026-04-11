@@ -355,7 +355,7 @@ fn draw_footer(f: &mut Frame, area: Rect, app: &App) {
                 Line::from(Span::styled(s.text.clone(), Style::default().fg(color)))
             } else {
                 Line::from(Span::styled(
-                    "q quit  hjkl nav  <cr> open  <space> sel  y/d/p yank/cut/paste  D del  r rename  a/A new  . hidden  / search  f filter  C-f fuzzy  o sort  R refresh  ' mark",
+                    "q quit  ←↓↑→ nav  <enter> open  <space> sel  y/d/p yank/cut/paste  D del  r rename  a/A new  . hidden  / search  f filter  C-f fuzzy  o sort  R refresh  ' mark",
                     Style::default().fg(pal.info_dim),
                 ))
             }

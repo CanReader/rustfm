@@ -47,10 +47,10 @@ fn handle_normal(app: &mut App, key: KeyEvent, pending_g: &mut bool) -> Result<(
         }
         KeyCode::Char('d') if ctrl => app.move_cursor(10),
         KeyCode::Char('u') if ctrl => app.move_cursor(-10),
-        KeyCode::Char('j') | KeyCode::Down => app.move_cursor(1),
-        KeyCode::Char('k') | KeyCode::Up => app.move_cursor(-1),
-        KeyCode::Char('h') | KeyCode::Left => app.go_up()?,
-        KeyCode::Char('l') | KeyCode::Right | KeyCode::Enter => app.enter()?,
+        KeyCode::Down => app.move_cursor(1),
+        KeyCode::Up => app.move_cursor(-1),
+        KeyCode::Left => app.go_up()?,
+        KeyCode::Right | KeyCode::Enter => app.enter()?,
         KeyCode::Char('g') => {
             if *pending_g {
                 app.goto_top();

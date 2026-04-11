@@ -13,7 +13,7 @@ Rustfm is a keyboard-driven TUI file manager built around a three-pane Miller-co
 - **Nerd Font icons** for folders, symlinks, and dozens of file types including Rust, Go, Python, JavaScript/TypeScript, HTML/CSS, Markdown, TOML, YAML, JSON, images, video, audio, archives, PDF, and office documents.
 
 ### Navigation and editing
-- **Vim-style keybindings**: `hjkl`, `gg`/`G`, `/`, `n`/`N`, `y`/`d`/`p`, `D`, `r`, `a`/`A`, `.`, `'`.
+- **Keyboard-driven navigation** using arrow keys and a compact vim-inspired command set: `gg`/`G`, `/`, `n`/`N`, `y`/`d`/`p`, `D`, `r`, `a`/`A`, `.`, `'`.
 - **Per-directory cursor memory** — the cursor position is remembered when you leave and return to a directory.
 - **Bookmarks** — press `'` followed by a key to jump to any path defined in `config.toml`.
 - **Multi-selection** with `<space>`; yank, cut, and delete all operate on the current selection when one exists.
@@ -68,10 +68,11 @@ The positional `PATH` argument is optional and may be a directory or a file. If 
 ### Navigation
 | Key | Action |
 |-----|--------|
-| `h` / `Left` | Go to parent directory |
-| `l` / `Right` / `Enter` | Enter directory or open file |
-| `j` / `Down` | Move cursor down |
-| `k` / `Up` | Move cursor up |
+| `←` | Go to parent directory |
+| `→` / `Enter` | Enter directory or open file |
+| `↓` | Move cursor down |
+| `↑` | Move cursor up |
+| `Ctrl-d` / `Ctrl-u` | Page down / page up |
 | `gg` | Jump to top |
 | `G` | Jump to bottom |
 | `'` `<key>` | Jump to bookmark |
