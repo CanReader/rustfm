@@ -28,7 +28,7 @@ Rustfm is a keyboard-driven TUI file manager built around a three-pane Miller-co
 - **Sort modes**: name, size, mtime, and extension, each with a reverse toggle. Triggered by `o` followed by `n`/`s`/`t`/`e`/`r`.
 - **Live filter** (`f`) — type to narrow the current directory by substring match. Distinct from search.
 - **Fuzzy finder overlay** (`Ctrl-F`) — centered popup with subsequence matching, scoring (consecutive-run, word-boundary, and start-of-string bonuses), and matched-character highlighting.
-- **Git integration** — shows an `M`/`A`/`D`/`R`/`?`/`!`/`U` column per entry using `git status --porcelain --ignored`, propagated up to parent directories so a folder is marked if any descendant has changed. Colors are theme-driven.
+- **Rich git integration** — shows a two-character X/Y status column per entry (index + worktree) using `git status --branch --porcelain=v1 --ignored`, propagated up to parent directories so a folder is marked if any descendant has changed. The header bar displays the current branch, `↑ahead`/`↓behind` counts, staged/unstaged/untracked/conflict counters, and stash count. A `z`-prefixed menu drives stage, unstage, discard, commit, diff preview, and arbitrary `git` command execution without leaving the TUI. Colors are theme-driven.
 
 ### Opening files
 - **Default application system** — Rustfm first consults an internal `[openers]` table in its config file, mapping file extension to a command template (with `{}` as the path placeholder). If no internal mapping exists for a file's extension, it falls back to the OS default handler: `xdg-open` on Linux, `open` on macOS, `start` on Windows. The status bar indicates which opener will be used, for example `opener:internal(rs)` versus `opener:os-default`.
@@ -98,6 +98,26 @@ The positional `PATH` argument is optional and may be a directory or a file. If 
 | `Ctrl-F` | Fuzzy finder overlay |
 | `o` `n`/`s`/`t`/`e` | Sort by name / size / mtime / extension |
 | `o r` | Reverse sort |
+
+### Selection
+| Key | Action |
+|-----|--------|
+| `<space>` | Toggle selection and move down |
+| `Ctrl-<space>` | Toggle selection without moving |
+| `Shift-↑` / `Shift-↓` | Range select from anchor |
+| `Ctrl-a` | Select all entries in current directory |
+| `Esc` | Clear selection (or clear active filter) |
+
+### Git (`z`-prefix menu)
+| Key | Action |
+|-----|--------|
+| `z s` | Stage selection or current entry (`git add`) |
+| `z u` | Unstage selection or current entry (`git restore --staged`) |
+| `z x` | Discard worktree changes (`git restore`) |
+| `z c` | Commit staged changes — opens a commit-message prompt |
+| `z d` | Toggle diff preview — dirty tracked files show a colored unified diff in the preview pane |
+| `z r` | Refresh git state |
+| `z g` / `z :` | Run an arbitrary `git` command — opens a `git:` prompt; output is shown in the preview pane |
 
 ### Miscellaneous
 | Key | Action |
@@ -173,6 +193,53 @@ All 25 theme keys accept either named colors (`"red"`, `"cyan"`, ...) or `#rrggb
 use_trash = true   # false = permanent delete on `D`
 show_hidden = false
 ```
+
+## Git workflow
+
+When the current directory is inside a git repository, Rustfm automatically picks up the repo root and keeps a live model of its state. No extra configuration is required beyond having `git` on `PATH`.
+
+### Status column
+
+Every entry shows a two-character `XY` column immediately after the selection marker:
+
+- **X** — the index (staged) state
+- **Y** — the worktree (unstaged) state
+
+Each slot uses the same codes as `git status --porcelain`: ` ` clean, `M` modified, `A` added, `D` deleted, `R` renamed, `C` copied, `U` conflict, `?` untracked, `!` ignored. Directory rows inherit the most severe state of any descendant, so a folder is marked if anything inside it is dirty. Colors come from the theme keys `git_modified`, `git_added`, `git_deleted`, `git_untracked`, and `git_ignored`.
+
+### Header badges
+
+When inside a repo the top bar adds, after the path:
+
+```
+⎇ main ↑2 ↓1 ●3 ✚5 ?2 ‼1 ⚑1 [diff]
+```
+
+| Badge | Meaning |
+|-------|---------|
+| `⎇ <branch>` | Current branch (or `HEAD` when detached) |
+| `↑N` | Commits ahead of upstream |
+| `↓N` | Commits behind upstream |
+| `●N` | Staged files |
+| `✚N` | Unstaged (modified in worktree) files |
+| `?N` | Untracked files |
+| `‼N` | Files with merge conflicts |
+| `⚑N` | Stash entries |
+| `[diff]` | Diff preview mode is active |
+
+### Actions
+
+All git operations are reached via the `z` prefix menu. After pressing `z`, the next key selects the action:
+
+- `z s` — **stage** the current entry, or the entire selection if one exists
+- `z u` — **unstage**
+- `z x` — **discard** worktree changes (equivalent to `git restore`)
+- `z c` — **commit**: opens a single-line prompt for the commit message; pressing `Enter` runs `git commit -m`
+- `z d` — **toggle diff preview**: when on, moving the cursor onto a dirty tracked file renders a colored unified diff (additions in `git_added`, deletions in `git_deleted`, hunks in the accent color)
+- `z r` — **refresh** the cached git state
+- `z g` (or `z :`) — **run any git command** from the repo root: opens a `git:` prompt where you can type e.g. `log --oneline -20`, `fetch origin`, `branch -a`, `diff --stat`, `stash list`. Rustfm executes `git -C <repo-root> <your args>` and dumps stdout and stderr into the preview pane. The repo state is refreshed automatically afterward so header badges and the status column update.
+
+Actions operate on the multi-selection when one is active; otherwise they act on the entry under the cursor. The status bar confirms success or surfaces the first line of any git error.
 
 ## Requirements
 
