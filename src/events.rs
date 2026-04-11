@@ -38,6 +38,7 @@ pub fn run_loop<B: Backend>(terminal: &mut Terminal<B>, app: &mut App) -> Result
 
 fn handle_normal(app: &mut App, key: KeyEvent, pending_g: &mut bool) -> Result<()> {
     let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+    let shift = key.modifiers.contains(KeyModifiers::SHIFT);
     match key.code {
         KeyCode::Char('q') => app.quit = true,
         KeyCode::Char('f') if ctrl => {
@@ -45,10 +46,25 @@ fn handle_normal(app: &mut App, key: KeyEvent, pending_g: &mut bool) -> Result<(
             app.update_fuzzy();
             app.mode = Mode::Fuzzy;
         }
+        KeyCode::Char('a') if ctrl => app.select_all(),
         KeyCode::Char('d') if ctrl => app.move_cursor(10),
         KeyCode::Char('u') if ctrl => app.move_cursor(-10),
-        KeyCode::Down => app.move_cursor(1),
-        KeyCode::Up => app.move_cursor(-1),
+        KeyCode::Down => {
+            if shift {
+                app.range_select(1);
+            } else {
+                app.select_anchor = None;
+                app.move_cursor(1);
+            }
+        }
+        KeyCode::Up => {
+            if shift {
+                app.range_select(-1);
+            } else {
+                app.select_anchor = None;
+                app.move_cursor(-1);
+            }
+        }
         KeyCode::Left => app.go_up()?,
         KeyCode::Right | KeyCode::Enter => app.enter()?,
         KeyCode::Char('g') => {
@@ -61,7 +77,13 @@ fn handle_normal(app: &mut App, key: KeyEvent, pending_g: &mut bool) -> Result<(
             }
         }
         KeyCode::Char('G') => app.goto_bottom(),
-        KeyCode::Char(' ') => app.toggle_select(),
+        KeyCode::Char(' ') => {
+            if ctrl {
+                app.toggle_select_no_move();
+            } else {
+                app.toggle_select();
+            }
+        }
         KeyCode::Esc => {
             if !app.filter.is_empty() {
                 app.clear_filter()?;

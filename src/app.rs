@@ -79,6 +79,7 @@ pub struct App {
     pub preview: Preview,
     pub pane_state: PaneState,
     pub selected: HashSet<PathBuf>,
+    pub select_anchor: Option<usize>,
     pub clipboard: Vec<PathBuf>,
     pub clip_mode: ClipMode,
     pub mode: Mode,
@@ -114,6 +115,7 @@ impl App {
             preview: Preview::Empty,
             pane_state: PaneState { cursor: HashMap::new() },
             selected: HashSet::new(),
+            select_anchor: None,
             clipboard: Vec::new(),
             clip_mode: ClipMode::Copy,
             mode: Mode::Normal,
@@ -307,11 +309,53 @@ impl App {
                 self.selected.insert(entry.path);
             }
         }
+        self.select_anchor = None;
         self.move_cursor(1);
+    }
+
+    pub fn toggle_select_no_move(&mut self) {
+        if let Some(entry) = self.current_entry().cloned() {
+            if !self.selected.remove(&entry.path) {
+                self.selected.insert(entry.path);
+            }
+        }
+        self.select_anchor = None;
+    }
+
+    pub fn select_all(&mut self) {
+        for e in &self.entries {
+            self.selected.insert(e.path.clone());
+        }
+        self.select_anchor = None;
+    }
+
+    pub fn range_select(&mut self, delta: i64) {
+        if self.entries.is_empty() {
+            return;
+        }
+        if self.select_anchor.is_none() {
+            self.select_anchor = Some(self.cursor);
+            if let Some(e) = self.entries.get(self.cursor) {
+                self.selected.insert(e.path.clone());
+            }
+        }
+        self.move_cursor(delta);
+        let anchor = self.select_anchor.unwrap_or(self.cursor);
+        let (lo, hi) = if anchor <= self.cursor {
+            (anchor, self.cursor)
+        } else {
+            (self.cursor, anchor)
+        };
+        for i in lo..=hi {
+            if let Some(e) = self.entries.get(i) {
+                self.selected.insert(e.path.clone());
+            }
+        }
     }
 
     pub fn clear_selection(&mut self) {
         self.selected.clear();
+        self.select_anchor = None;
     }
 
     pub fn toggle_hidden(&mut self) -> Result<()> {
