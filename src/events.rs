@@ -15,6 +15,7 @@ pub fn run_loop<B: Backend>(terminal: &mut Terminal<B>, app: &mut App) -> Result
     let mut pending_cmd = false;
     while !app.quit {
         app.drain_task_messages();
+        app.tick();
         terminal.draw(|f| ui::draw(f, app))?;
         app.expire_status();
 
@@ -63,13 +64,13 @@ fn handle_normal(
             KeyCode::Char('u') => app.git_unstage()?,
             KeyCode::Char('x') => app.git_discard()?,
             KeyCode::Char('c') => {
-                app.input.clear();
+                app.input_clear();
                 app.mode = Mode::Prompt(PromptKind::CommitMsg);
             }
             KeyCode::Char('d') => app.toggle_diff_mode(),
             KeyCode::Char('r') => app.refresh()?,
             KeyCode::Char('g') | KeyCode::Char(':') => {
-                app.input.clear();
+                app.input_clear();
                 app.mode = Mode::Prompt(PromptKind::GitCmd);
             }
             _ => {}
@@ -80,7 +81,7 @@ fn handle_normal(
     match key.code {
         KeyCode::Char('q') => app.quit = true,
         KeyCode::Char('f') if ctrl => {
-            app.input.clear();
+            app.input_clear();
             app.update_fuzzy();
             app.mode = Mode::Fuzzy;
         }
@@ -140,34 +141,39 @@ fn handle_normal(
             }
         }
         KeyCode::Char('r') => {
-            app.input = app.current_entry().map(|e| e.name.clone()).unwrap_or_default();
+            let name = app.current_entry().map(|e| e.name.clone()).unwrap_or_default();
+            app.input_set(name);
             app.mode = Mode::Prompt(PromptKind::Rename);
         }
         KeyCode::Char('a') => {
-            app.input.clear();
+            app.input_clear();
             app.mode = Mode::Prompt(PromptKind::New);
         }
         KeyCode::Char('.') => app.toggle_hidden()?,
         KeyCode::Char('/') => {
-            app.input.clear();
+            app.input_clear();
             app.mode = Mode::Search;
         }
         KeyCode::Char('f') => {
-            app.input = app.filter.clone();
+            app.input_set(app.filter.clone());
             app.mode = Mode::Filter;
         }
         KeyCode::Char('n') => app.search_next(true),
         KeyCode::Char('N') => app.search_next(false),
         KeyCode::Char(':') => {
-            app.input.clear();
+            app.input_clear();
             app.mode = Mode::Prompt(PromptKind::GoTo);
         }
         KeyCode::Char('\'') => {
-            app.input.clear();
+            app.input_clear();
             app.mode = Mode::Prompt(PromptKind::Bookmark);
         }
         KeyCode::Char('o') => app.mode = Mode::Sort,
         KeyCode::Char('R') => app.refresh()?,
+        KeyCode::Char('j') => app.scroll_preview(1),
+        KeyCode::Char('k') => app.scroll_preview(-1),
+        KeyCode::Char('J') | KeyCode::Char('}') => app.scroll_preview(10),
+        KeyCode::Char('K') | KeyCode::Char('{') => app.scroll_preview(-10),
         KeyCode::Char('z') => {
             *pending_git = true;
             return Ok(());
@@ -177,7 +183,7 @@ fn handle_normal(
             return Ok(());
         }
         KeyCode::Char('!') => {
-            app.input.clear();
+            app.input_clear();
             app.mode = Mode::Prompt(PromptKind::Shell);
         }
         _ => {}
@@ -186,22 +192,54 @@ fn handle_normal(
     Ok(())
 }
 
+fn edit_input(app: &mut App, key: KeyEvent) -> bool {
+    match key.code {
+        KeyCode::Left => {
+            app.input_left();
+            true
+        }
+        KeyCode::Right => {
+            app.input_right();
+            true
+        }
+        KeyCode::Home => {
+            app.input_home();
+            true
+        }
+        KeyCode::End => {
+            app.input_end();
+            true
+        }
+        KeyCode::Backspace => {
+            app.input_backspace();
+            true
+        }
+        KeyCode::Delete => {
+            app.input_delete();
+            true
+        }
+        KeyCode::Char(c) => {
+            app.input_insert(c);
+            true
+        }
+        _ => false,
+    }
+}
+
 fn handle_search(app: &mut App, key: KeyEvent) -> Result<()> {
     match key.code {
         KeyCode::Esc => {
             app.mode = Mode::Normal;
-            app.input.clear();
+            app.input_clear();
         }
         KeyCode::Enter => {
-            app.search_query = std::mem::take(&mut app.input);
+            app.search_query = app.input_take();
             app.apply_search();
             app.mode = Mode::Normal;
         }
-        KeyCode::Backspace => {
-            app.input.pop();
+        _ => {
+            edit_input(app, key);
         }
-        KeyCode::Char(c) => app.input.push(c),
-        _ => {}
     }
     Ok(())
 }
@@ -210,22 +248,18 @@ fn handle_filter(app: &mut App, key: KeyEvent) -> Result<()> {
     match key.code {
         KeyCode::Esc => {
             app.mode = Mode::Normal;
-            app.input.clear();
+            app.input_clear();
         }
         KeyCode::Enter => {
             app.apply_filter()?;
             app.mode = Mode::Normal;
-            app.input.clear();
+            app.input_clear();
         }
-        KeyCode::Backspace => {
-            app.input.pop();
-            app.apply_filter()?;
+        _ => {
+            if edit_input(app, key) {
+                app.apply_filter()?;
+            }
         }
-        KeyCode::Char(c) => {
-            app.input.push(c);
-            app.apply_filter()?;
-        }
-        _ => {}
     }
     Ok(())
 }
@@ -234,24 +268,20 @@ fn handle_fuzzy(app: &mut App, key: KeyEvent) -> Result<()> {
     match key.code {
         KeyCode::Esc => {
             app.mode = Mode::Normal;
-            app.input.clear();
+            app.input_clear();
             app.fuzzy_matches.clear();
         }
         KeyCode::Enter => {
             app.accept_fuzzy(0);
             app.mode = Mode::Normal;
-            app.input.clear();
+            app.input_clear();
             app.fuzzy_matches.clear();
         }
-        KeyCode::Backspace => {
-            app.input.pop();
-            app.update_fuzzy();
+        _ => {
+            if edit_input(app, key) {
+                app.update_fuzzy();
+            }
         }
-        KeyCode::Char(c) => {
-            app.input.push(c);
-            app.update_fuzzy();
-        }
-        _ => {}
     }
     Ok(())
 }
@@ -284,10 +314,10 @@ fn handle_prompt(app: &mut App, key: KeyEvent, kind: PromptKind) -> Result<()> {
     match key.code {
         KeyCode::Esc => {
             app.mode = Mode::Normal;
-            app.input.clear();
+            app.input_clear();
         }
         KeyCode::Enter => {
-            let input = std::mem::take(&mut app.input);
+            let input = app.input_take();
             app.mode = Mode::Normal;
             if input.is_empty() {
                 return Ok(());
@@ -302,11 +332,9 @@ fn handle_prompt(app: &mut App, key: KeyEvent, kind: PromptKind) -> Result<()> {
                 PromptKind::Shell => app.run_shell_raw(&input)?,
             }
         }
-        KeyCode::Backspace => {
-            app.input.pop();
+        _ => {
+            edit_input(app, key);
         }
-        KeyCode::Char(c) => app.input.push(c),
-        _ => {}
     }
     Ok(())
 }

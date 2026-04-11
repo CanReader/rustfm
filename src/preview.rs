@@ -10,6 +10,52 @@ use std::{
     path::Path,
 };
 
+pub fn pdf_page_count(path: &Path) -> u32 {
+    let out = std::process::Command::new("pdfinfo").arg(path).output();
+    let Ok(out) = out else { return 1 };
+    if !out.status.success() {
+        return 1;
+    }
+    for line in String::from_utf8_lossy(&out.stdout).lines() {
+        if let Some(rest) = line.strip_prefix("Pages:") {
+            return rest.trim().parse().unwrap_or(1);
+        }
+    }
+    1
+}
+
+pub fn render_pdf_page(path: &Path, page: u32, picker: Option<&mut Picker>) -> Preview {
+    let Some(picker) = picker else {
+        return Preview::Binary("pdf (graphics unavailable in terminal)".into());
+    };
+    let tmp_dir = std::env::temp_dir();
+    let prefix = tmp_dir.join(format!("rustfm_pdf_{}", std::process::id()));
+    let out_path = tmp_dir.join(format!("rustfm_pdf_{}.png", std::process::id()));
+    let _ = std::fs::remove_file(&out_path);
+
+    let page_s = page.to_string();
+    let status = std::process::Command::new("pdftoppm")
+        .args(["-png", "-r", "200", "-f", &page_s, "-l", &page_s, "-singlefile", "-aa", "yes", "-aaVector", "yes"])
+        .arg(path)
+        .arg(&prefix)
+        .status();
+    match status {
+        Ok(s) if s.success() && out_path.exists() => {
+            let res = image::ImageReader::open(&out_path)
+                .and_then(|r| Ok(r.with_guessed_format()?))
+                .map_err(|e| format!("pdf open: {e}"))
+                .and_then(|r| r.decode().map_err(|e| format!("pdf decode: {e}")));
+            let _ = std::fs::remove_file(&out_path);
+            match res {
+                Ok(img) => Preview::Image(picker.new_resize_protocol(img)),
+                Err(e) => Preview::Unreadable(e),
+            }
+        }
+        Ok(_) => Preview::Binary("pdf (pdftoppm failed)".into()),
+        Err(_) => Preview::Binary("pdf (install poppler-utils for preview)".into()),
+    }
+}
+
 pub enum Preview {
     Text(Vec<String>),
     Dir(Vec<Entry>),
@@ -70,6 +116,9 @@ pub fn generate(
             } else {
                 return Preview::Binary("image (graphics unavailable in terminal)".into());
             }
+        }
+        if ext_l == "pdf" {
+            return render_pdf_page(path, 1, picker);
         }
     }
 

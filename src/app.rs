@@ -70,6 +70,12 @@ pub struct FuzzyMatch {
     pub match_positions: Vec<usize>,
 }
 
+pub struct PdfState {
+    pub path: PathBuf,
+    pub page: u32,
+    pub total: u32,
+}
+
 pub struct App {
     pub config: Config,
     pub palette: Palette,
@@ -79,6 +85,9 @@ pub struct App {
     pub parent_entries: Vec<Entry>,
     pub parent_cursor: usize,
     pub preview: Preview,
+    pub preview_scroll: u16,
+    pub preview_pending: Option<(PathBuf, Instant)>,
+    pub pdf_state: Option<PdfState>,
     pub pane_state: PaneState,
     pub selected: HashSet<PathBuf>,
     pub select_anchor: Option<usize>,
@@ -86,6 +95,7 @@ pub struct App {
     pub clip_mode: ClipMode,
     pub mode: Mode,
     pub input: String,
+    pub input_cursor: usize,
     pub search_query: String,
     pub filter: String,
     pub fuzzy_matches: Vec<FuzzyMatch>,
@@ -115,6 +125,9 @@ impl App {
             parent_entries: Vec::new(),
             parent_cursor: 0,
             preview: Preview::Empty,
+            preview_scroll: 0,
+            preview_pending: None,
+            pdf_state: None,
             pane_state: PaneState { cursor: HashMap::new() },
             selected: HashSet::new(),
             select_anchor: None,
@@ -122,6 +135,7 @@ impl App {
             clip_mode: ClipMode::Copy,
             mode: Mode::Normal,
             input: String::new(),
+            input_cursor: 0,
             search_query: String::new(),
             filter: String::new(),
             fuzzy_matches: Vec::new(),
@@ -198,17 +212,65 @@ impl App {
     }
 
     fn reload_preview(&mut self) {
+        self.preview_scroll = 0;
+        self.pdf_state = None;
         let path = self.entries.get(self.cursor).map(|e| e.path.clone());
-        self.preview = match path {
-            Some(p) => preview::generate(
-                &p,
-                self.show_hidden,
-                self.picker.as_mut(),
-                self.git.as_ref(),
-                self.diff_mode,
-            ),
-            None => Preview::Empty,
+        let Some(p) = path else {
+            self.preview = Preview::Empty;
+            self.preview_pending = None;
+            return;
         };
+        let is_pdf = p
+            .extension()
+            .and_then(|e| e.to_str())
+            .map(|e| e.eq_ignore_ascii_case("pdf"))
+            .unwrap_or(false);
+        if is_pdf {
+            self.preview = Preview::Text(vec!["loading pdf…".into()]);
+            self.preview_pending = Some((p, Instant::now()));
+            return;
+        }
+        self.preview_pending = None;
+        self.preview = preview::generate(
+            &p,
+            self.show_hidden,
+            self.picker.as_mut(),
+            self.git.as_ref(),
+            self.diff_mode,
+        );
+    }
+
+    pub fn tick(&mut self) {
+        let Some((path, at)) = self.preview_pending.clone() else {
+            return;
+        };
+        if at.elapsed() < Duration::from_millis(150) {
+            return;
+        }
+        if self.current_entry().map(|e| e.path != path).unwrap_or(true) {
+            self.preview_pending = None;
+            return;
+        }
+        let total = preview::pdf_page_count(&path).max(1);
+        self.preview = preview::render_pdf_page(&path, 1, self.picker.as_mut());
+        self.pdf_state = Some(PdfState { path, page: 1, total });
+        self.preview_pending = None;
+    }
+
+    pub fn scroll_preview(&mut self, delta: i32) {
+        if let Some(st) = self.pdf_state.as_mut() {
+            let new = (st.page as i32 + delta).clamp(1, st.total as i32) as u32;
+            if new == st.page {
+                return;
+            }
+            st.page = new;
+            let path = st.path.clone();
+            self.preview = preview::render_pdf_page(&path, new, self.picker.as_mut());
+            self.set_status(format!("pdf page {}/{}", new, self.pdf_state.as_ref().unwrap().total), false);
+            return;
+        }
+        let new = (self.preview_scroll as i32 + delta).max(0) as u16;
+        self.preview_scroll = new;
     }
 
     pub fn toggle_diff_mode(&mut self) {
@@ -856,6 +918,79 @@ impl App {
                 }
             }
         }
+    }
+
+    pub fn input_clear(&mut self) {
+        self.input.clear();
+        self.input_cursor = 0;
+    }
+
+    pub fn input_set(&mut self, s: String) {
+        self.input_cursor = s.len();
+        self.input = s;
+    }
+
+    pub fn input_take(&mut self) -> String {
+        self.input_cursor = 0;
+        std::mem::take(&mut self.input)
+    }
+
+    pub fn input_insert(&mut self, c: char) {
+        self.input.insert(self.input_cursor, c);
+        self.input_cursor += c.len_utf8();
+    }
+
+    pub fn input_backspace(&mut self) {
+        if self.input_cursor == 0 {
+            return;
+        }
+        let mut new_cursor = self.input_cursor - 1;
+        while new_cursor > 0 && !self.input.is_char_boundary(new_cursor) {
+            new_cursor -= 1;
+        }
+        self.input.replace_range(new_cursor..self.input_cursor, "");
+        self.input_cursor = new_cursor;
+    }
+
+    pub fn input_delete(&mut self) {
+        if self.input_cursor >= self.input.len() {
+            return;
+        }
+        let mut end = self.input_cursor + 1;
+        while end < self.input.len() && !self.input.is_char_boundary(end) {
+            end += 1;
+        }
+        self.input.replace_range(self.input_cursor..end, "");
+    }
+
+    pub fn input_left(&mut self) {
+        if self.input_cursor == 0 {
+            return;
+        }
+        let mut c = self.input_cursor - 1;
+        while c > 0 && !self.input.is_char_boundary(c) {
+            c -= 1;
+        }
+        self.input_cursor = c;
+    }
+
+    pub fn input_right(&mut self) {
+        if self.input_cursor >= self.input.len() {
+            return;
+        }
+        let mut c = self.input_cursor + 1;
+        while c < self.input.len() && !self.input.is_char_boundary(c) {
+            c += 1;
+        }
+        self.input_cursor = c;
+    }
+
+    pub fn input_home(&mut self) {
+        self.input_cursor = 0;
+    }
+
+    pub fn input_end(&mut self) {
+        self.input_cursor = self.input.len();
     }
 
     pub fn set_status(&mut self, text: String, is_error: bool) {

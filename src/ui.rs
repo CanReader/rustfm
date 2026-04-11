@@ -205,7 +205,14 @@ fn draw_panes(f: &mut Frame, area: Rect, app: &mut App) {
         app.config.icons,
         true,
     );
-    draw_preview(f, preview_area, &mut app.preview, &app.palette, app.config.icons);
+    draw_preview(
+        f,
+        preview_area,
+        &mut app.preview,
+        app.preview_scroll,
+        &app.palette,
+        app.config.icons,
+    );
 }
 
 fn draw_entries(
@@ -277,7 +284,14 @@ fn draw_entries(
     f.render_stateful_widget(list, area, &mut state);
 }
 
-fn draw_preview(f: &mut Frame, area: Rect, preview: &mut Preview, pal: &Palette, icons_enabled: bool) {
+fn draw_preview(
+    f: &mut Frame,
+    area: Rect,
+    preview: &mut Preview,
+    scroll: u16,
+    pal: &Palette,
+    icons_enabled: bool,
+) {
     let block = Block::default()
         .borders(Borders::ALL)
         .border_style(Style::default().fg(pal.inactive_border))
@@ -287,18 +301,17 @@ fn draw_preview(f: &mut Frame, area: Rect, preview: &mut Preview, pal: &Palette,
 
     match preview {
         Preview::Text(lines) => {
-            let joined = lines
-                .iter()
-                .take(inner.height as usize)
-                .cloned()
-                .collect::<Vec<_>>()
-                .join("\n");
-            let p = Paragraph::new(joined).wrap(Wrap { trim: false });
+            let joined = lines.join("\n");
+            let p = Paragraph::new(joined)
+                .wrap(Wrap { trim: false })
+                .scroll((scroll, 0));
             f.render_widget(p, inner);
         }
         Preview::Dir(entries) => {
+            let start = scroll as usize;
             let items: Vec<ListItem> = entries
                 .iter()
+                .skip(start)
                 .take(inner.height as usize)
                 .map(|e| {
                     let icon = if icons_enabled { icon_for(e) } else { "" };
@@ -323,7 +336,6 @@ fn draw_preview(f: &mut Frame, area: Rect, preview: &mut Preview, pal: &Palette,
         Preview::Diff(lines) => {
             let rendered: Vec<Line> = lines
                 .iter()
-                .take(inner.height as usize * 2)
                 .map(|l| {
                     let color = if l.starts_with("+++") || l.starts_with("---") {
                         pal.info_dim
@@ -341,7 +353,7 @@ fn draw_preview(f: &mut Frame, area: Rect, preview: &mut Preview, pal: &Palette,
                     Line::from(Span::styled(l.clone(), Style::default().fg(color)))
                 })
                 .collect();
-            f.render_widget(Paragraph::new(rendered), inner);
+            f.render_widget(Paragraph::new(rendered).scroll((scroll, 0)), inner);
         }
         Preview::Binary(info) => {
             f.render_widget(
@@ -478,6 +490,30 @@ fn draw_footer(f: &mut Frame, area: Rect, app: &App) {
         }
     };
     f.render_widget(Paragraph::new(text), area);
+
+    let prefix_len: Option<u16> = match app.mode {
+        Mode::Search => Some(1),
+        Mode::Filter => Some("filter: ".len() as u16),
+        Mode::Prompt(kind) => {
+            let label = match kind {
+                PromptKind::Rename => "rename:",
+                PromptKind::New => "new (end with / for dir):",
+                PromptKind::GoTo => "cd:",
+                PromptKind::Bookmark => "bookmark:",
+                PromptKind::CommitMsg => "commit:",
+                PromptKind::GitCmd => "git:",
+                PromptKind::Shell => "$",
+            };
+            Some(label.chars().count() as u16 + 1)
+        }
+        _ => None,
+    };
+    if let Some(prefix) = prefix_len {
+        let cursor_byte = app.input_cursor.min(app.input.len());
+        let input_len = app.input[..cursor_byte].chars().count() as u16;
+        let x = area.x.saturating_add(prefix).saturating_add(input_len);
+        f.set_cursor_position((x.min(area.x + area.width.saturating_sub(1)), area.y));
+    }
 }
 
 fn draw_fuzzy(f: &mut Frame, area: Rect, app: &App) {
