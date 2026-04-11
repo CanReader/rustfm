@@ -1,6 +1,7 @@
 use crate::{
     config::SortMode,
     fs_ops::{list_dir, Entry},
+    git::{self, GitInfo},
 };
 use ratatui_image::{picker::Picker, protocol::StatefulProtocol};
 use std::{
@@ -13,6 +14,7 @@ pub enum Preview {
     Text(Vec<String>),
     Dir(Vec<Entry>),
     Image(StatefulProtocol),
+    Diff(Vec<String>),
     Binary(String),
     Empty,
     Unreadable(String),
@@ -25,13 +27,33 @@ const IMAGE_EXTS: &[&str] = &[
     "png", "jpg", "jpeg", "gif", "bmp", "webp", "tiff", "tif", "ico", "avif", "qoi",
 ];
 
-pub fn generate(path: &Path, show_hidden: bool, picker: Option<&mut Picker>) -> Preview {
+pub fn generate(
+    path: &Path,
+    show_hidden: bool,
+    picker: Option<&mut Picker>,
+    git_info: Option<&GitInfo>,
+    diff_mode: bool,
+) -> Preview {
     if path.is_dir() {
         return match list_dir(path, show_hidden, SortMode::Name, false, true) {
             Ok(v) if v.is_empty() => Preview::Empty,
             Ok(v) => Preview::Dir(v),
             Err(e) => Preview::Unreadable(e.to_string()),
         };
+    }
+
+    if diff_mode {
+        if let Some(info) = git_info {
+            if let Some(fs) = info.status.get(path) {
+                if fs.is_dirty() && !fs.is_untracked() {
+                    match git::diff_for(&info.root, path) {
+                        Ok(lines) if !lines.is_empty() => return Preview::Diff(lines),
+                        Ok(_) => {}
+                        Err(e) => return Preview::Unreadable(format!("git diff: {e}")),
+                    }
+                }
+            }
+        }
     }
 
     if let Some(ext) = path.extension().and_then(|e| e.to_str()) {

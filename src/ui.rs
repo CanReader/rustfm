@@ -9,7 +9,7 @@ use ratatui::{
 };
 use ratatui_image::StatefulImage;
 use std::{
-    collections::{HashMap, HashSet},
+    collections::HashSet,
     path::PathBuf,
 };
 
@@ -17,7 +17,7 @@ use crate::{
     app::{App, FuzzyMatch, Mode, Progress, PromptKind},
     config::SortMode,
     fs_ops::Entry,
-    git::GitStatus,
+    git::{GitInfo, GitState},
     preview::Preview,
     theme::Palette,
 };
@@ -105,9 +105,62 @@ fn draw_header(f: &mut Frame, area: Rect, app: &App) {
         format!("[{sort_label}{rev}]"),
         Style::default().fg(pal.info_dim),
     ));
-    if app.git_root.is_some() {
+    if let Some(info) = app.git.as_ref() {
         spans.push(Span::raw("  "));
-        spans.push(Span::styled("⎇ git", Style::default().fg(pal.git_added)));
+        let branch = info.branch.as_deref().unwrap_or("HEAD");
+        spans.push(Span::styled(
+            format!("⎇ {branch}"),
+            Style::default().fg(pal.git_added).add_modifier(Modifier::BOLD),
+        ));
+        if info.ahead > 0 {
+            spans.push(Span::styled(
+                format!(" ↑{}", info.ahead),
+                Style::default().fg(pal.git_added),
+            ));
+        }
+        if info.behind > 0 {
+            spans.push(Span::styled(
+                format!(" ↓{}", info.behind),
+                Style::default().fg(pal.git_modified),
+            ));
+        }
+        if info.staged > 0 {
+            spans.push(Span::styled(
+                format!(" ●{}", info.staged),
+                Style::default().fg(pal.git_added),
+            ));
+        }
+        if info.unstaged > 0 {
+            spans.push(Span::styled(
+                format!(" ✚{}", info.unstaged),
+                Style::default().fg(pal.git_modified),
+            ));
+        }
+        if info.untracked > 0 {
+            spans.push(Span::styled(
+                format!(" ?{}", info.untracked),
+                Style::default().fg(pal.git_untracked),
+            ));
+        }
+        if info.conflicts > 0 {
+            spans.push(Span::styled(
+                format!(" ‼{}", info.conflicts),
+                Style::default().fg(pal.git_deleted).add_modifier(Modifier::BOLD),
+            ));
+        }
+        if info.stash_count > 0 {
+            spans.push(Span::styled(
+                format!(" ⚑{}", info.stash_count),
+                Style::default().fg(pal.info_dim),
+            ));
+        }
+        if app.diff_mode {
+            spans.push(Span::raw("  "));
+            spans.push(Span::styled(
+                "[diff]",
+                Style::default().fg(pal.info_accent),
+            ));
+        }
     }
 
     f.render_widget(Paragraph::new(Line::from(spans)), area);
@@ -136,7 +189,7 @@ fn draw_panes(f: &mut Frame, area: Rect, app: &mut App) {
         &app.parent_entries,
         app.parent_cursor,
         &app.selected,
-        &app.git_status,
+        app.git.as_ref(),
         &app.palette,
         app.config.icons,
         false,
@@ -147,7 +200,7 @@ fn draw_panes(f: &mut Frame, area: Rect, app: &mut App) {
         &app.entries,
         app.cursor,
         &app.selected,
-        &app.git_status,
+        app.git.as_ref(),
         &app.palette,
         app.config.icons,
         true,
@@ -161,7 +214,7 @@ fn draw_entries(
     entries: &[Entry],
     cursor: usize,
     selected: &HashSet<PathBuf>,
-    git: &HashMap<PathBuf, GitStatus>,
+    git: Option<&GitInfo>,
     pal: &Palette,
     icons_enabled: bool,
     active: bool,
@@ -176,9 +229,14 @@ fn draw_entries(
                 style = style.add_modifier(Modifier::REVERSED);
             }
             let marker = if is_sel { "*" } else { " " };
-            let (git_marker, git_color) = match git.get(&e.path) {
-                Some(s) => (s.label(), git_color(*s, pal)),
-                None => (" ", Color::Reset),
+            let (x_char, y_char, x_color, y_color) = match git.and_then(|g| g.status.get(&e.path)) {
+                Some(fs) => (
+                    fs.index.label(),
+                    fs.worktree.label(),
+                    state_color(fs.index, pal),
+                    state_color(fs.worktree, pal),
+                ),
+                None => (" ", " ", Color::Reset, Color::Reset),
             };
             let name = if e.is_dir {
                 format!("{}/", e.name)
@@ -187,7 +245,8 @@ fn draw_entries(
             };
             ListItem::new(Line::from(vec![
                 Span::raw(marker),
-                Span::styled(git_marker, Style::default().fg(git_color)),
+                Span::styled(x_char, Style::default().fg(x_color).add_modifier(Modifier::BOLD)),
+                Span::styled(y_char, Style::default().fg(y_color)),
                 Span::raw(" "),
                 Span::raw(icon),
                 Span::raw(" "),
@@ -260,6 +319,29 @@ fn draw_preview(f: &mut Frame, area: Rect, preview: &mut Preview, pal: &Palette,
         Preview::Image(proto) => {
             let image_widget = StatefulImage::default();
             f.render_stateful_widget(image_widget, inner, proto);
+        }
+        Preview::Diff(lines) => {
+            let rendered: Vec<Line> = lines
+                .iter()
+                .take(inner.height as usize * 2)
+                .map(|l| {
+                    let color = if l.starts_with("+++") || l.starts_with("---") {
+                        pal.info_dim
+                    } else if l.starts_with('+') {
+                        pal.git_added
+                    } else if l.starts_with('-') {
+                        pal.git_deleted
+                    } else if l.starts_with("@@") {
+                        pal.info_accent
+                    } else if l.starts_with("diff ") || l.starts_with("index ") {
+                        pal.info_dim
+                    } else {
+                        pal.file
+                    };
+                    Line::from(Span::styled(l.clone(), Style::default().fg(color)))
+                })
+                .collect();
+            f.render_widget(Paragraph::new(rendered), inner);
         }
         Preview::Binary(info) => {
             f.render_widget(
@@ -355,7 +437,7 @@ fn draw_footer(f: &mut Frame, area: Rect, app: &App) {
                 Line::from(Span::styled(s.text.clone(), Style::default().fg(color)))
             } else {
                 Line::from(Span::styled(
-                    "q quit  ←↓↑→ nav  S-↑↓ range-sel  C-space toggle  C-a all  <space> sel  y/d/p yank/cut/paste  D del  r rename  a/A new  . hidden  / search  f filter  C-f fuzzy  o sort",
+                    "q quit  ←↓↑→ nav  <space> sel  y/d/p  D del  r rename  a/A new  . hidden  / search  f filter  C-f fuzzy  o sort  z git(s/u/x/c/d/r)",
                     Style::default().fg(pal.info_dim),
                 ))
             }
@@ -385,6 +467,7 @@ fn draw_footer(f: &mut Frame, area: Rect, app: &App) {
                 PromptKind::NewDir => "new dir:",
                 PromptKind::GoTo => "cd:",
                 PromptKind::Bookmark => "bookmark:",
+                PromptKind::CommitMsg => "commit:",
             };
             Line::from(vec![
                 Span::styled(label, Style::default().fg(pal.info_size)),
@@ -466,13 +549,16 @@ fn entry_style(e: &Entry, pal: &Palette) -> Style {
     }
 }
 
-fn git_color(status: GitStatus, pal: &Palette) -> Color {
-    match status {
-        GitStatus::Modified => pal.git_modified,
-        GitStatus::Added | GitStatus::Renamed => pal.git_added,
-        GitStatus::Deleted | GitStatus::Conflict => pal.git_deleted,
-        GitStatus::Untracked => pal.git_untracked,
-        GitStatus::Ignored => pal.git_ignored,
+fn state_color(state: GitState, pal: &Palette) -> Color {
+    match state {
+        GitState::Clean => Color::Reset,
+        GitState::Modified => pal.git_modified,
+        GitState::Added | GitState::Copied => pal.git_added,
+        GitState::Renamed => pal.git_added,
+        GitState::Deleted => pal.git_deleted,
+        GitState::Conflict => pal.git_deleted,
+        GitState::Untracked => pal.git_untracked,
+        GitState::Ignored => pal.git_ignored,
     }
 }
 

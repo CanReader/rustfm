@@ -11,7 +11,7 @@ use crate::{
     config::{Config, SortMode},
     fs_ops::{self, Entry},
     fuzzy,
-    git::{self, GitStatus},
+    git::{self, GitInfo},
     opener::Opener,
     preview::{self, Preview},
     theme::Palette,
@@ -35,6 +35,7 @@ pub enum PromptKind {
     NewDir,
     GoTo,
     Bookmark,
+    CommitMsg,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -91,8 +92,8 @@ pub struct App {
     pub show_hidden: bool,
     pub quit: bool,
     pub picker: Option<Picker>,
-    pub git_status: HashMap<PathBuf, GitStatus>,
-    pub git_root: Option<PathBuf>,
+    pub git: Option<GitInfo>,
+    pub diff_mode: bool,
     pub worker: Worker,
     pub next_task_id: u64,
     pub progress: Option<Progress>,
@@ -126,8 +127,8 @@ impl App {
             status: None,
             quit: false,
             picker,
-            git_status: HashMap::new(),
-            git_root: None,
+            git: None,
+            diff_mode: false,
             worker,
             next_task_id: 1,
             progress: None,
@@ -164,8 +165,7 @@ impl App {
         if self.config.git_integration {
             self.reload_git();
         } else {
-            self.git_status.clear();
-            self.git_root = None;
+            self.git = None;
         }
         self.reload_preview();
         Ok(())
@@ -193,21 +193,112 @@ impl App {
     }
 
     fn reload_git(&mut self) {
-        if let Some((root, map)) = git::status_for(&self.cwd) {
-            self.git_root = Some(root);
-            self.git_status = map;
-        } else {
-            self.git_root = None;
-            self.git_status.clear();
-        }
+        self.git = git::fetch(&self.cwd);
     }
 
     fn reload_preview(&mut self) {
         let path = self.entries.get(self.cursor).map(|e| e.path.clone());
         self.preview = match path {
-            Some(p) => preview::generate(&p, self.show_hidden, self.picker.as_mut()),
+            Some(p) => preview::generate(
+                &p,
+                self.show_hidden,
+                self.picker.as_mut(),
+                self.git.as_ref(),
+                self.diff_mode,
+            ),
             None => Preview::Empty,
         };
+    }
+
+    pub fn toggle_diff_mode(&mut self) {
+        self.diff_mode = !self.diff_mode;
+        self.reload_preview();
+        let msg = if self.diff_mode { "diff preview on" } else { "diff preview off" };
+        self.set_status(msg.into(), false);
+    }
+
+    fn git_targets(&self) -> Vec<PathBuf> {
+        if self.selected.is_empty() {
+            self.current_entry().map(|e| vec![e.path.clone()]).unwrap_or_default()
+        } else {
+            self.selected.iter().cloned().collect()
+        }
+    }
+
+    pub fn git_stage(&mut self) -> Result<()> {
+        let Some(info) = self.git.as_ref() else {
+            self.set_status("not in a git repo".into(), true);
+            return Ok(());
+        };
+        let root = info.root.clone();
+        let targets = self.git_targets();
+        if targets.is_empty() {
+            return Ok(());
+        }
+        match git::stage(&root, &targets) {
+            Ok(_) => {
+                self.set_status(format!("staged {}", targets.len()), false);
+                self.refresh()?;
+            }
+            Err(e) => self.set_status(format!("stage failed: {e}"), true),
+        }
+        Ok(())
+    }
+
+    pub fn git_unstage(&mut self) -> Result<()> {
+        let Some(info) = self.git.as_ref() else {
+            self.set_status("not in a git repo".into(), true);
+            return Ok(());
+        };
+        let root = info.root.clone();
+        let targets = self.git_targets();
+        if targets.is_empty() {
+            return Ok(());
+        }
+        match git::unstage(&root, &targets) {
+            Ok(_) => {
+                self.set_status(format!("unstaged {}", targets.len()), false);
+                self.refresh()?;
+            }
+            Err(e) => self.set_status(format!("unstage failed: {e}"), true),
+        }
+        Ok(())
+    }
+
+    pub fn git_discard(&mut self) -> Result<()> {
+        let Some(info) = self.git.as_ref() else {
+            self.set_status("not in a git repo".into(), true);
+            return Ok(());
+        };
+        let root = info.root.clone();
+        let targets = self.git_targets();
+        if targets.is_empty() {
+            return Ok(());
+        }
+        match git::discard(&root, &targets) {
+            Ok(_) => {
+                self.set_status(format!("discarded {}", targets.len()), false);
+                self.refresh()?;
+            }
+            Err(e) => self.set_status(format!("discard failed: {e}"), true),
+        }
+        Ok(())
+    }
+
+    pub fn git_commit(&mut self, msg: &str) -> Result<()> {
+        let Some(info) = self.git.as_ref() else {
+            self.set_status("not in a git repo".into(), true);
+            return Ok(());
+        };
+        let root = info.root.clone();
+        match git::commit(&root, msg) {
+            Ok(line) => {
+                self.set_status(line, false);
+                self.refresh()?;
+            }
+            Err(e) => self.set_status(format!("commit failed: {e}"), true),
+        }
+        Ok(())
     }
 
     pub fn current_entry(&self) -> Option<&Entry> {

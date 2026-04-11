@@ -11,6 +11,7 @@ use crate::{
 
 pub fn run_loop<B: Backend>(terminal: &mut Terminal<B>, app: &mut App) -> Result<()> {
     let mut pending_g = false;
+    let mut pending_git = false;
     while !app.quit {
         app.drain_task_messages();
         terminal.draw(|f| ui::draw(f, app))?;
@@ -21,7 +22,7 @@ pub fn run_loop<B: Backend>(terminal: &mut Terminal<B>, app: &mut App) -> Result
         }
         match event::read()? {
             Event::Key(key) if key.kind == KeyEventKind::Press => match app.mode {
-                Mode::Normal => handle_normal(app, key, &mut pending_g)?,
+                Mode::Normal => handle_normal(app, key, &mut pending_g, &mut pending_git)?,
                 Mode::Search => handle_search(app, key)?,
                 Mode::Filter => handle_filter(app, key)?,
                 Mode::Fuzzy => handle_fuzzy(app, key)?,
@@ -36,9 +37,32 @@ pub fn run_loop<B: Backend>(terminal: &mut Terminal<B>, app: &mut App) -> Result
     Ok(())
 }
 
-fn handle_normal(app: &mut App, key: KeyEvent, pending_g: &mut bool) -> Result<()> {
+fn handle_normal(
+    app: &mut App,
+    key: KeyEvent,
+    pending_g: &mut bool,
+    pending_git: &mut bool,
+) -> Result<()> {
     let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
     let shift = key.modifiers.contains(KeyModifiers::SHIFT);
+
+    if *pending_git {
+        *pending_git = false;
+        match key.code {
+            KeyCode::Char('s') => app.git_stage()?,
+            KeyCode::Char('u') => app.git_unstage()?,
+            KeyCode::Char('x') => app.git_discard()?,
+            KeyCode::Char('c') => {
+                app.input.clear();
+                app.mode = Mode::Prompt(PromptKind::CommitMsg);
+            }
+            KeyCode::Char('d') => app.toggle_diff_mode(),
+            KeyCode::Char('r') => app.refresh()?,
+            _ => {}
+        }
+        return Ok(());
+    }
+
     match key.code {
         KeyCode::Char('q') => app.quit = true,
         KeyCode::Char('f') if ctrl => {
@@ -134,6 +158,10 @@ fn handle_normal(app: &mut App, key: KeyEvent, pending_g: &mut bool) -> Result<(
         }
         KeyCode::Char('o') => app.mode = Mode::Sort,
         KeyCode::Char('R') => app.refresh()?,
+        KeyCode::Char('z') => {
+            *pending_git = true;
+            return Ok(());
+        }
         _ => {}
     }
     *pending_g = false;
@@ -252,6 +280,7 @@ fn handle_prompt(app: &mut App, key: KeyEvent, kind: PromptKind) -> Result<()> {
                 PromptKind::NewDir => app.make_dir(&input)?,
                 PromptKind::GoTo => app.goto_path(&input)?,
                 PromptKind::Bookmark => app.jump_bookmark(&input)?,
+                PromptKind::CommitMsg => app.git_commit(&input)?,
             }
         }
         KeyCode::Backspace => {
