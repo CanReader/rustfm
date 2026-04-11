@@ -37,6 +37,7 @@ pub enum PromptKind {
     Bookmark,
     CommitMsg,
     GitCmd,
+    Shell,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -283,6 +284,99 @@ impl App {
             }
             Err(e) => self.set_status(format!("discard failed: {e}"), true),
         }
+        Ok(())
+    }
+
+    pub fn run_shell_raw(&mut self, raw: &str) -> Result<()> {
+        let trimmed = raw.trim();
+        if trimmed.is_empty() {
+            return Ok(());
+        }
+        self.run_shell_cmd(trimmed)
+    }
+
+    pub fn run_command_binding(&mut self, key: char) -> Result<()> {
+        let tmpl = match self.config.commands.get(&key.to_string()).cloned() {
+            Some(t) => t,
+            None => {
+                self.set_status(format!("no command bound to '{key}'"), true);
+                return Ok(());
+            }
+        };
+        let expanded = self.expand_command(&tmpl);
+        self.run_shell_cmd(&expanded)
+    }
+
+    fn expand_command(&self, template: &str) -> String {
+        let current = self.current_entry().map(|e| e.path.clone());
+        let f = current
+            .as_ref()
+            .map(|p| shell_quote(&p.display().to_string()))
+            .unwrap_or_default();
+        let n = current
+            .as_ref()
+            .and_then(|p| p.file_name().map(|s| s.to_string_lossy().into_owned()))
+            .map(|s| shell_quote(&s))
+            .unwrap_or_default();
+        let d = shell_quote(&self.cwd.display().to_string());
+        let s = if self.selected.is_empty() {
+            f.clone()
+        } else {
+            let mut items: Vec<String> = self
+                .selected
+                .iter()
+                .map(|p| shell_quote(&p.display().to_string()))
+                .collect();
+            items.sort();
+            items.join(" ")
+        };
+        template
+            .replace("{f}", &f)
+            .replace("{n}", &n)
+            .replace("{d}", &d)
+            .replace("{s}", &s)
+    }
+
+    fn run_shell_cmd(&mut self, cmd: &str) -> Result<()> {
+        use crossterm::{
+            event::{self as cevent, DisableMouseCapture, EnableMouseCapture, Event},
+            execute,
+            terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
+        };
+        use std::io::Write;
+        use std::process::Command;
+
+        let _ = disable_raw_mode();
+        let _ = execute!(std::io::stdout(), LeaveAlternateScreen, DisableMouseCapture);
+        println!("\n$ {cmd}");
+        let _ = std::io::stdout().flush();
+
+        let status = Command::new("sh")
+            .arg("-c")
+            .arg(cmd)
+            .current_dir(&self.cwd)
+            .status();
+
+        let label = match &status {
+            Ok(s) if s.success() => format!("ran: {cmd}"),
+            Ok(s) => format!("exit {}: {cmd}", s.code().unwrap_or(-1)),
+            Err(e) => format!("spawn failed: {e}"),
+        };
+
+        println!("\n[press any key to return]");
+        let _ = std::io::stdout().flush();
+        let _ = enable_raw_mode();
+        loop {
+            if let Ok(true) = cevent::poll(std::time::Duration::from_millis(500)) {
+                if let Ok(Event::Key(_)) = cevent::read() {
+                    break;
+                }
+            }
+        }
+        let _ = execute!(std::io::stdout(), EnterAlternateScreen, EnableMouseCapture);
+
+        self.set_status(label, status.as_ref().map(|s| !s.success()).unwrap_or(true));
+        self.refresh()?;
         Ok(())
     }
 
@@ -775,6 +869,17 @@ impl App {
             }
         }
     }
+}
+
+fn shell_quote(s: &str) -> String {
+    if !s.is_empty()
+        && s.chars()
+            .all(|c| c.is_ascii_alphanumeric() || "_-./=+:@%".contains(c))
+    {
+        return s.to_string();
+    }
+    let escaped = s.replace('\'', r"'\''");
+    format!("'{escaped}'")
 }
 
 fn shell_words(s: &str) -> Vec<String> {

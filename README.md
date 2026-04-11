@@ -108,6 +108,12 @@ The positional `PATH` argument is optional and may be a directory or a file. If 
 | `Ctrl-a` | Select all entries in current directory |
 | `Esc` | Clear selection (or clear active filter) |
 
+### Shell
+| Key | Action |
+|-----|--------|
+| `!` | Ad-hoc shell prompt — type a command, run in the current directory |
+| `,` `<key>` | Run a shell command bound to `<key>` in the `[commands]` table |
+
 ### Git (`z`-prefix menu)
 | Key | Action |
 |-----|--------|
@@ -164,6 +170,17 @@ c = "/home/you/.config"
 
 Press `'` followed by the bookmark key to jump.
 
+### Commands
+
+```toml
+[commands]
+e = "nvim {f}"
+g = "lazygit"
+t = "htop"
+```
+
+Press `,` followed by the key to run. See **Shell commands** below for placeholder semantics.
+
 ### Theme
 
 ```toml
@@ -193,6 +210,38 @@ All 25 theme keys accept either named colors (`"red"`, `"cyan"`, ...) or `#rrggb
 use_trash = true   # false = permanent delete on `D`
 show_hidden = false
 ```
+
+## Shell commands
+
+Rustfm can run arbitrary shell commands in the current directory without dropping back to a real terminal. The TUI is suspended (leaves the alternate screen, disables raw mode), the command runs with stdin/stdout/stderr attached to the real terminal, and after it exits Rustfm prints `[press any key to return]` before restoring the TUI. This makes it work correctly for both interactive programs (e.g. `nvim`, `htop`, `lazygit`, `python`) and one-shot commands whose output you want to read (e.g. `ls -la`, `cargo build`, `rg foo`).
+
+### Ad-hoc commands
+
+Press `!` to open a `$` prompt, type any shell command, and press `Enter`. The command runs via `sh -c` in the current directory.
+
+### Key-bound commands
+
+The `[commands]` table in `config.toml` maps single-character keys to command templates. Press `,` followed by the bound key to run the command. Placeholders are substituted before execution and all paths are shell-quoted:
+
+| Placeholder | Replaced with |
+|-------------|---------------|
+| `{f}` | Absolute path of the entry under the cursor |
+| `{n}` | Base name of the entry under the cursor |
+| `{d}` | Absolute path of the current directory |
+| `{s}` | Space-joined selection (or `{f}` if no selection is active) |
+
+Example:
+
+```toml
+[commands]
+e = "nvim {f}"          # ,e — open current file in nvim
+g = "lazygit"           # ,g — launch lazygit in cwd
+t = "htop"              # ,t — launch htop
+b = "cargo build"       # ,b — build the project under the cursor's dir
+r = "rg --color=always {s}"   # ,r — ripgrep selection
+```
+
+After the command exits, Rustfm refreshes the directory and git state so any changes are reflected immediately.
 
 ## Git workflow
 

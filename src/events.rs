@@ -12,6 +12,7 @@ use crate::{
 pub fn run_loop<B: Backend>(terminal: &mut Terminal<B>, app: &mut App) -> Result<()> {
     let mut pending_g = false;
     let mut pending_git = false;
+    let mut pending_cmd = false;
     while !app.quit {
         app.drain_task_messages();
         terminal.draw(|f| ui::draw(f, app))?;
@@ -22,7 +23,7 @@ pub fn run_loop<B: Backend>(terminal: &mut Terminal<B>, app: &mut App) -> Result
         }
         match event::read()? {
             Event::Key(key) if key.kind == KeyEventKind::Press => match app.mode {
-                Mode::Normal => handle_normal(app, key, &mut pending_g, &mut pending_git)?,
+                Mode::Normal => handle_normal(app, key, &mut pending_g, &mut pending_git, &mut pending_cmd)?,
                 Mode::Search => handle_search(app, key)?,
                 Mode::Filter => handle_filter(app, key)?,
                 Mode::Fuzzy => handle_fuzzy(app, key)?,
@@ -42,9 +43,18 @@ fn handle_normal(
     key: KeyEvent,
     pending_g: &mut bool,
     pending_git: &mut bool,
+    pending_cmd: &mut bool,
 ) -> Result<()> {
     let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
     let shift = key.modifiers.contains(KeyModifiers::SHIFT);
+
+    if *pending_cmd {
+        *pending_cmd = false;
+        if let KeyCode::Char(c) = key.code {
+            app.run_command_binding(c)?;
+        }
+        return Ok(());
+    }
 
     if *pending_git {
         *pending_git = false;
@@ -166,6 +176,14 @@ fn handle_normal(
             *pending_git = true;
             return Ok(());
         }
+        KeyCode::Char(',') => {
+            *pending_cmd = true;
+            return Ok(());
+        }
+        KeyCode::Char('!') => {
+            app.input.clear();
+            app.mode = Mode::Prompt(PromptKind::Shell);
+        }
         _ => {}
     }
     *pending_g = false;
@@ -286,6 +304,7 @@ fn handle_prompt(app: &mut App, key: KeyEvent, kind: PromptKind) -> Result<()> {
                 PromptKind::Bookmark => app.jump_bookmark(&input)?,
                 PromptKind::CommitMsg => app.git_commit(&input)?,
                 PromptKind::GitCmd => app.run_git_cmd(&input)?,
+                PromptKind::Shell => app.run_shell_raw(&input)?,
             }
         }
         KeyCode::Backspace => {

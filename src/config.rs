@@ -34,6 +34,7 @@ pub struct Config {
     pub dirs_first: bool,
     pub openers: HashMap<String, String>,
     pub bookmarks: HashMap<String, String>,
+    pub commands: HashMap<String, String>,
     pub theme: Theme,
 }
 
@@ -60,6 +61,7 @@ impl Default for Config {
             dirs_first: true,
             openers,
             bookmarks: HashMap::new(),
+            commands: HashMap::new(),
             theme: Theme::default(),
         }
     }
@@ -140,6 +142,15 @@ pdf = "zathura {}"
 [bookmarks]
 h = "~"
 c = "~/.config"
+
+# Key-bound shell commands. Press `,` then the key to run.
+# Placeholders: {f} current file, {d} current dir, {s} selection (space-joined),
+#               {n} current file name (basename). Paths are shell-quoted.
+# The TUI is suspended while the command runs, then restored.
+[commands]
+e = "nvim {f}"
+g = "lazygit"
+t = "htop"
 
 [theme]
 active_border = "cyan"
