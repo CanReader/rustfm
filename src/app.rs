@@ -187,6 +187,11 @@ pub struct App {
     pub progress: Option<Progress>,
     pub palette_matches: Vec<FuzzyMatch>,
     pub palette_cursor: usize,
+    /// Set after returning from an external program (editor, pager) that took
+    /// over the terminal. The event loop clears ratatui's diff buffer before
+    /// the next draw so the whole UI repaints, not just the diff against a
+    /// stale cached frame.
+    pub needs_redraw: bool,
 }
 
 impl App {
@@ -228,6 +233,7 @@ impl App {
             progress: None,
             palette_matches: Vec::new(),
             palette_cursor: 0,
+            needs_redraw: false,
         };
         app.refresh()?;
         Ok(app)
@@ -669,6 +675,7 @@ impl App {
             }
             Err(e) => self.set_status(format!("open failed: {e}"), true),
         }
+        self.needs_redraw = true;
         Ok(())
     }
 

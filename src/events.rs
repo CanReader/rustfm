@@ -16,6 +16,10 @@ pub fn run_loop<B: Backend>(terminal: &mut Terminal<B>, app: &mut App) -> Result
     while !app.quit {
         app.drain_task_messages();
         app.tick();
+        if app.needs_redraw {
+            terminal.clear()?;
+            app.needs_redraw = false;
+        }
         terminal.draw(|f| ui::draw(f, app))?;
         app.expire_status();
 
