@@ -8,6 +8,7 @@ use std::{
 
 use crate::{
     background::{Task, TaskMsg, Worker},
+    clipboard,
     config::{Config, SortMode},
     fs_ops::{self, Entry},
     fuzzy,
@@ -26,7 +27,83 @@ pub enum Mode {
     Fuzzy,
     ConfirmDelete,
     Sort,
+    Palette,
 }
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PaletteAction {
+    Yank,
+    Cut,
+    Paste,
+    Delete,
+    Rename,
+    NewEntry,
+    CopyPath,
+    CopyName,
+    CopyDir,
+    CopyFilesToClipboard,
+    ToggleHidden,
+    ToggleDiff,
+    Refresh,
+    SelectAll,
+    ClearSelection,
+    SortName,
+    SortSize,
+    SortMtime,
+    SortExt,
+    SortReverse,
+    GitStage,
+    GitUnstage,
+    GitDiscard,
+    GitCommit,
+    GitDiff,
+    GitRefresh,
+    GitRaw,
+    GoTo,
+    Bookmark,
+    Shell,
+    Quit,
+}
+
+pub struct PaletteEntry {
+    pub action: PaletteAction,
+    pub label: &'static str,
+    pub hint: &'static str,
+}
+
+pub const PALETTE_ENTRIES: &[PaletteEntry] = &[
+    PaletteEntry { action: PaletteAction::Yank, label: "Yank (copy) selection", hint: "y" },
+    PaletteEntry { action: PaletteAction::Cut, label: "Cut selection", hint: "d" },
+    PaletteEntry { action: PaletteAction::Paste, label: "Paste into current directory", hint: "p" },
+    PaletteEntry { action: PaletteAction::Delete, label: "Delete selection", hint: "D" },
+    PaletteEntry { action: PaletteAction::Rename, label: "Rename current entry", hint: "r" },
+    PaletteEntry { action: PaletteAction::NewEntry, label: "New file or directory", hint: "a" },
+    PaletteEntry { action: PaletteAction::CopyPath, label: "Copy absolute path to clipboard", hint: "" },
+    PaletteEntry { action: PaletteAction::CopyName, label: "Copy filename to clipboard", hint: "" },
+    PaletteEntry { action: PaletteAction::CopyDir, label: "Copy current directory path to clipboard", hint: "" },
+    PaletteEntry { action: PaletteAction::CopyFilesToClipboard, label: "Copy files to system clipboard (paste in other apps)", hint: "" },
+    PaletteEntry { action: PaletteAction::ToggleHidden, label: "Toggle hidden files", hint: "." },
+    PaletteEntry { action: PaletteAction::ToggleDiff, label: "Toggle git diff preview", hint: "z d" },
+    PaletteEntry { action: PaletteAction::Refresh, label: "Refresh directory", hint: "R" },
+    PaletteEntry { action: PaletteAction::SelectAll, label: "Select all entries", hint: "C-a" },
+    PaletteEntry { action: PaletteAction::ClearSelection, label: "Clear selection", hint: "Esc" },
+    PaletteEntry { action: PaletteAction::SortName, label: "Sort by name", hint: "o n" },
+    PaletteEntry { action: PaletteAction::SortSize, label: "Sort by size", hint: "o s" },
+    PaletteEntry { action: PaletteAction::SortMtime, label: "Sort by modified time", hint: "o t" },
+    PaletteEntry { action: PaletteAction::SortExt, label: "Sort by extension", hint: "o e" },
+    PaletteEntry { action: PaletteAction::SortReverse, label: "Reverse sort order", hint: "o r" },
+    PaletteEntry { action: PaletteAction::GitStage, label: "Git: stage", hint: "z s" },
+    PaletteEntry { action: PaletteAction::GitUnstage, label: "Git: unstage", hint: "z u" },
+    PaletteEntry { action: PaletteAction::GitDiscard, label: "Git: discard worktree changes", hint: "z x" },
+    PaletteEntry { action: PaletteAction::GitCommit, label: "Git: commit staged changes", hint: "z c" },
+    PaletteEntry { action: PaletteAction::GitDiff, label: "Git: toggle diff preview", hint: "z d" },
+    PaletteEntry { action: PaletteAction::GitRefresh, label: "Git: refresh state", hint: "z r" },
+    PaletteEntry { action: PaletteAction::GitRaw, label: "Git: run arbitrary command", hint: "z g" },
+    PaletteEntry { action: PaletteAction::GoTo, label: "Go to path…", hint: "" },
+    PaletteEntry { action: PaletteAction::Bookmark, label: "Jump to bookmark", hint: "'" },
+    PaletteEntry { action: PaletteAction::Shell, label: "Run shell command", hint: "!" },
+    PaletteEntry { action: PaletteAction::Quit, label: "Quit Rustfm", hint: "q" },
+];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PromptKind {
@@ -108,6 +185,8 @@ pub struct App {
     pub worker: Worker,
     pub next_task_id: u64,
     pub progress: Option<Progress>,
+    pub palette_matches: Vec<FuzzyMatch>,
+    pub palette_cursor: usize,
 }
 
 impl App {
@@ -147,6 +226,8 @@ impl App {
             worker,
             next_task_id: 1,
             progress: None,
+            palette_matches: Vec::new(),
+            palette_cursor: 0,
         };
         app.refresh()?;
         Ok(app)
@@ -653,12 +734,204 @@ impl App {
 
     pub fn yank(&mut self) {
         self.stash_clipboard(ClipMode::Copy);
-        self.set_status(format!("yanked {} item(s)", self.clipboard.len()), false);
+        let n = self.clipboard.len();
+        let sys = self.push_clipboard_files();
+        self.set_status(format!("yanked {n} item(s){sys}"), false);
     }
 
     pub fn cut(&mut self) {
         self.stash_clipboard(ClipMode::Cut);
-        self.set_status(format!("cut {} item(s)", self.clipboard.len()), false);
+        let n = self.clipboard.len();
+        let sys = self.push_clipboard_files();
+        self.set_status(format!("cut {n} item(s){sys}"), false);
+    }
+
+    /// Best-effort push of the current internal clipboard to the OS clipboard
+    /// as a `text/uri-list` payload. Returns a short status suffix such as
+    /// " → wl-copy" on success, or " (no clipboard tool)" on failure — both
+    /// forms are appended to the main yank/cut status line so the user sees
+    /// whether the system clipboard actually received the files.
+    fn push_clipboard_files(&self) -> String {
+        if self.clipboard.is_empty() {
+            return String::new();
+        }
+        match clipboard::copy_files(&self.clipboard) {
+            Ok(tool) => format!(" → {tool}"),
+            Err(e) => format!(" ({e})"),
+        }
+    }
+
+    pub fn copy_current_path(&mut self) {
+        let Some(entry) = self.current_entry().cloned() else { return };
+        let text = entry.path.display().to_string();
+        match clipboard::copy_text(&text) {
+            Ok(tool) => self.set_status(format!("copied path → {tool}"), false),
+            Err(e) => self.set_status(format!("copy failed: {e}"), true),
+        }
+    }
+
+    pub fn copy_current_name(&mut self) {
+        let Some(entry) = self.current_entry().cloned() else { return };
+        match clipboard::copy_text(&entry.name) {
+            Ok(tool) => self.set_status(format!("copied name → {tool}"), false),
+            Err(e) => self.set_status(format!("copy failed: {e}"), true),
+        }
+    }
+
+    pub fn copy_cwd(&mut self) {
+        let text = self.cwd.display().to_string();
+        match clipboard::copy_text(&text) {
+            Ok(tool) => self.set_status(format!("copied cwd → {tool}"), false),
+            Err(e) => self.set_status(format!("copy failed: {e}"), true),
+        }
+    }
+
+    /// Push the current selection (or entry under cursor) to the OS clipboard
+    /// without touching the internal yank buffer. Useful for sharing files
+    /// with other apps without disturbing an in-progress cut/paste flow.
+    pub fn copy_selection_to_os_clipboard(&mut self) {
+        let items: Vec<PathBuf> = if self.selected.is_empty() {
+            self.current_entry().map(|e| vec![e.path.clone()]).unwrap_or_default()
+        } else {
+            self.selected.iter().cloned().collect()
+        };
+        if items.is_empty() {
+            return;
+        }
+        match clipboard::copy_files(&items) {
+            Ok(tool) => self.set_status(format!("copied {} item(s) → {tool}", items.len()), false),
+            Err(e) => self.set_status(format!("copy failed: {e}"), true),
+        }
+    }
+
+    pub fn open_palette(&mut self) {
+        self.input_clear();
+        self.palette_cursor = 0;
+        self.update_palette();
+        self.mode = Mode::Palette;
+    }
+
+    pub fn update_palette(&mut self) {
+        self.palette_matches.clear();
+        if self.input.is_empty() {
+            for (i, _) in PALETTE_ENTRIES.iter().enumerate() {
+                self.palette_matches.push(FuzzyMatch {
+                    index: i,
+                    score: 0,
+                    match_positions: Vec::new(),
+                });
+            }
+        } else {
+            for (i, e) in PALETTE_ENTRIES.iter().enumerate() {
+                if let Some((score, positions)) = fuzzy::score(&self.input, e.label) {
+                    self.palette_matches.push(FuzzyMatch {
+                        index: i,
+                        score,
+                        match_positions: positions,
+                    });
+                }
+            }
+            self.palette_matches.sort_by(|a, b| b.score.cmp(&a.score));
+        }
+        if self.palette_cursor >= self.palette_matches.len() {
+            self.palette_cursor = self.palette_matches.len().saturating_sub(1);
+        }
+    }
+
+    pub fn palette_move(&mut self, delta: i64) {
+        if self.palette_matches.is_empty() {
+            return;
+        }
+        let len = self.palette_matches.len() as i64;
+        let new = (self.palette_cursor as i64 + delta).clamp(0, len - 1) as usize;
+        self.palette_cursor = new;
+    }
+
+    pub fn accept_palette(&mut self) -> Result<Option<PromptKind>> {
+        let Some(m) = self.palette_matches.get(self.palette_cursor) else {
+            return Ok(None);
+        };
+        let Some(entry) = PALETTE_ENTRIES.get(m.index) else {
+            return Ok(None);
+        };
+        let action = entry.action;
+        self.mode = Mode::Normal;
+        self.input_clear();
+        self.palette_matches.clear();
+        self.palette_cursor = 0;
+        self.run_palette_action(action)
+    }
+
+    fn run_palette_action(&mut self, action: PaletteAction) -> Result<Option<PromptKind>> {
+        match action {
+            PaletteAction::Yank => self.yank(),
+            PaletteAction::Cut => self.cut(),
+            PaletteAction::Paste => self.paste()?,
+            PaletteAction::Delete => {
+                if self.config.confirm_delete {
+                    self.mode = Mode::ConfirmDelete;
+                } else {
+                    self.delete_current()?;
+                }
+            }
+            PaletteAction::Rename => {
+                let name = self.current_entry().map(|e| e.name.clone()).unwrap_or_default();
+                self.input_set(name);
+                self.mode = Mode::Prompt(PromptKind::Rename);
+                return Ok(Some(PromptKind::Rename));
+            }
+            PaletteAction::NewEntry => {
+                self.input_clear();
+                self.mode = Mode::Prompt(PromptKind::New);
+                return Ok(Some(PromptKind::New));
+            }
+            PaletteAction::CopyPath => self.copy_current_path(),
+            PaletteAction::CopyName => self.copy_current_name(),
+            PaletteAction::CopyDir => self.copy_cwd(),
+            PaletteAction::CopyFilesToClipboard => self.copy_selection_to_os_clipboard(),
+            PaletteAction::ToggleHidden => self.toggle_hidden()?,
+            PaletteAction::ToggleDiff => self.toggle_diff_mode(),
+            PaletteAction::Refresh => self.refresh()?,
+            PaletteAction::SelectAll => self.select_all(),
+            PaletteAction::ClearSelection => self.clear_selection(),
+            PaletteAction::SortName => self.set_sort(SortMode::Name)?,
+            PaletteAction::SortSize => self.set_sort(SortMode::Size)?,
+            PaletteAction::SortMtime => self.set_sort(SortMode::Mtime)?,
+            PaletteAction::SortExt => self.set_sort(SortMode::Ext)?,
+            PaletteAction::SortReverse => self.toggle_sort_reverse()?,
+            PaletteAction::GitStage => self.git_stage()?,
+            PaletteAction::GitUnstage => self.git_unstage()?,
+            PaletteAction::GitDiscard => self.git_discard()?,
+            PaletteAction::GitCommit => {
+                self.input_clear();
+                self.mode = Mode::Prompt(PromptKind::CommitMsg);
+                return Ok(Some(PromptKind::CommitMsg));
+            }
+            PaletteAction::GitDiff => self.toggle_diff_mode(),
+            PaletteAction::GitRefresh => self.refresh()?,
+            PaletteAction::GitRaw => {
+                self.input_clear();
+                self.mode = Mode::Prompt(PromptKind::GitCmd);
+                return Ok(Some(PromptKind::GitCmd));
+            }
+            PaletteAction::GoTo => {
+                self.input_clear();
+                self.mode = Mode::Prompt(PromptKind::GoTo);
+                return Ok(Some(PromptKind::GoTo));
+            }
+            PaletteAction::Bookmark => {
+                self.input_clear();
+                self.mode = Mode::Prompt(PromptKind::Bookmark);
+                return Ok(Some(PromptKind::Bookmark));
+            }
+            PaletteAction::Shell => {
+                self.input_clear();
+                self.mode = Mode::Prompt(PromptKind::Shell);
+                return Ok(Some(PromptKind::Shell));
+            }
+            PaletteAction::Quit => self.quit = true,
+        }
+        Ok(None)
     }
 
     fn stash_clipboard(&mut self, mode: ClipMode) {

@@ -30,6 +30,7 @@ pub fn run_loop<B: Backend>(terminal: &mut Terminal<B>, app: &mut App) -> Result
                 Mode::Fuzzy => handle_fuzzy(app, key)?,
                 Mode::Sort => handle_sort(app, key)?,
                 Mode::ConfirmDelete => handle_confirm_delete(app, key)?,
+                Mode::Palette => handle_palette(app, key)?,
                 Mode::Prompt(kind) => handle_prompt(app, key, kind)?,
             },
             Event::Resize(_, _) => {}
@@ -160,10 +161,7 @@ fn handle_normal(
         }
         KeyCode::Char('n') => app.search_next(true),
         KeyCode::Char('N') => app.search_next(false),
-        KeyCode::Char(':') => {
-            app.input_clear();
-            app.mode = Mode::Prompt(PromptKind::GoTo);
-        }
+        KeyCode::Char(':') => app.open_palette(),
         KeyCode::Char('\'') => {
             app.input_clear();
             app.mode = Mode::Prompt(PromptKind::Bookmark);
@@ -280,6 +278,29 @@ fn handle_fuzzy(app: &mut App, key: KeyEvent) -> Result<()> {
         _ => {
             if edit_input(app, key) {
                 app.update_fuzzy();
+            }
+        }
+    }
+    Ok(())
+}
+
+fn handle_palette(app: &mut App, key: KeyEvent) -> Result<()> {
+    match key.code {
+        KeyCode::Esc => {
+            app.mode = Mode::Normal;
+            app.input_clear();
+            app.palette_matches.clear();
+            app.palette_cursor = 0;
+        }
+        KeyCode::Enter => {
+            app.accept_palette()?;
+        }
+        KeyCode::Up => app.palette_move(-1),
+        KeyCode::Down => app.palette_move(1),
+        _ => {
+            if edit_input(app, key) {
+                app.palette_cursor = 0;
+                app.update_palette();
             }
         }
     }

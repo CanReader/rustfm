@@ -1,5 +1,6 @@
 mod app;
 mod background;
+mod clipboard;
 mod config;
 mod events;
 mod fs_ops;

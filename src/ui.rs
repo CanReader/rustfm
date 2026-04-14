@@ -14,7 +14,7 @@ use std::{
 };
 
 use crate::{
-    app::{App, FuzzyMatch, Mode, Progress, PromptKind},
+    app::{App, FuzzyMatch, Mode, Progress, PromptKind, PALETTE_ENTRIES},
     config::SortMode,
     fs_ops::Entry,
     git::{GitInfo, GitState},
@@ -53,6 +53,9 @@ pub fn draw(f: &mut Frame, app: &mut App) {
 
     if app.mode == Mode::Fuzzy {
         draw_fuzzy(f, area, app);
+    }
+    if app.mode == Mode::Palette {
+        draw_palette(f, area, app);
     }
 }
 
@@ -472,6 +475,10 @@ fn draw_footer(f: &mut Frame, area: Rect, app: &App) {
             "delete selection? [y/N]",
             Style::default().fg(pal.status_err).add_modifier(Modifier::BOLD),
         )),
+        Mode::Palette => Line::from(Span::styled(
+            "palette: type to filter  ↑↓ move  <cr> run  <esc> cancel",
+            Style::default().fg(pal.info_dim),
+        )),
         Mode::Prompt(kind) => {
             let label = match kind {
                 PromptKind::Rename => "rename:",
@@ -570,6 +577,81 @@ fn draw_fuzzy(f: &mut Frame, area: Rect, app: &App) {
     let mut state = ListState::default();
     if !app.fuzzy_matches.is_empty() {
         state.select(Some(0));
+    }
+    f.render_stateful_widget(list, layout[1], &mut state);
+}
+
+fn draw_palette(f: &mut Frame, area: Rect, app: &App) {
+    let w = area.width.saturating_sub(8).min(72);
+    let h = area.height.saturating_sub(4).min(20);
+    let x = area.x + (area.width.saturating_sub(w)) / 2;
+    let y = area.y + (area.height.saturating_sub(h)) / 2;
+    let popup = Rect::new(x, y, w, h);
+    f.render_widget(Clear, popup);
+
+    let pal = &app.palette;
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(pal.active_border))
+        .title(" command palette ");
+    let inner = block.inner(popup);
+    f.render_widget(block, popup);
+
+    let layout = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Length(1), Constraint::Min(1)])
+        .split(inner);
+
+    let query = Paragraph::new(format!("> {}", app.input))
+        .style(Style::default().fg(pal.overlay_fg));
+    f.render_widget(query, layout[0]);
+
+    let list_h = layout[1].height as usize;
+    let offset = app.palette_cursor.saturating_sub(list_h.saturating_sub(1));
+    let hint_w = 10usize;
+    let label_w = (layout[1].width as usize).saturating_sub(hint_w + 1);
+
+    let items: Vec<ListItem> = app
+        .palette_matches
+        .iter()
+        .skip(offset)
+        .take(list_h)
+        .map(|m: &FuzzyMatch| {
+            let entry = &PALETTE_ENTRIES[m.index];
+            let positions: std::collections::HashSet<usize> =
+                m.match_positions.iter().copied().collect();
+            let mut spans = Vec::new();
+            for (i, c) in entry.label.chars().enumerate() {
+                let style = if positions.contains(&i) {
+                    Style::default().fg(pal.overlay_match).add_modifier(Modifier::BOLD)
+                } else {
+                    Style::default().fg(pal.overlay_fg)
+                };
+                spans.push(Span::styled(c.to_string(), style));
+            }
+            let label_len = entry.label.chars().count();
+            if label_len < label_w {
+                spans.push(Span::raw(" ".repeat(label_w - label_len)));
+            }
+            if !entry.hint.is_empty() {
+                spans.push(Span::styled(
+                    format!("  {}", entry.hint),
+                    Style::default().fg(pal.info_dim),
+                ));
+            }
+            ListItem::new(Line::from(spans))
+        })
+        .collect();
+
+    let list = List::new(items).highlight_style(
+        Style::default()
+            .bg(pal.cursor_bg)
+            .fg(pal.cursor_fg)
+            .add_modifier(Modifier::BOLD),
+    );
+    let mut state = ListState::default();
+    if !app.palette_matches.is_empty() {
+        state.select(Some(app.palette_cursor.saturating_sub(offset)));
     }
     f.render_stateful_widget(list, layout[1], &mut state);
 }
