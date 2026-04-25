@@ -104,42 +104,115 @@ pub fn sort_entries(entries: &mut [Entry], mode: SortMode, reverse: bool, dirs_f
     });
 }
 
-pub fn copy_path(src: &Path, dst: &Path) -> Result<()> {
-    if src.is_dir() {
-        copy_dir_all(src, dst)?;
+/// Recursively copies `src` to `dst`, preserving symlinks (does not follow
+/// them) and continuing past per-entry errors. The returned vector contains
+/// human-readable messages for each entry that failed; an empty vector means
+/// a fully clean copy. Top-level failures (e.g. unable to create the root
+/// destination directory) still propagate as `Err`.
+pub fn copy_path(src: &Path, dst: &Path) -> Result<Vec<String>> {
+    let meta = fs::symlink_metadata(src)
+        .with_context(|| format!("stat {}", src.display()))?;
+    let ft = meta.file_type();
+    let mut errs = Vec::new();
+    if ft.is_symlink() {
+        if let Some(parent) = dst.parent() {
+            fs::create_dir_all(parent).ok();
+        }
+        copy_symlink(src, dst)
+            .with_context(|| format!("symlink {} -> {}", src.display(), dst.display()))?;
+    } else if ft.is_dir() {
+        copy_dir_recursive(src, dst, &mut errs)?;
     } else {
         if let Some(parent) = dst.parent() {
             fs::create_dir_all(parent).ok();
         }
-        fs::copy(src, dst)?;
+        fs::copy(src, dst)
+            .with_context(|| format!("copy {} -> {}", src.display(), dst.display()))?;
     }
-    Ok(())
+    Ok(errs)
 }
 
-fn copy_dir_all(src: &Path, dst: &Path) -> Result<()> {
-    fs::create_dir_all(dst)?;
-    for entry in fs::read_dir(src)? {
-        let entry = entry?;
-        let ft = entry.file_type()?;
+fn copy_dir_recursive(src: &Path, dst: &Path, errs: &mut Vec<String>) -> Result<()> {
+    fs::create_dir_all(dst)
+        .with_context(|| format!("mkdir {}", dst.display()))?;
+    let rd = match fs::read_dir(src) {
+        Ok(rd) => rd,
+        Err(e) => {
+            errs.push(format!("read {}: {e}", src.display()));
+            return Ok(());
+        }
+    };
+    for entry in rd {
+        let entry = match entry {
+            Ok(e) => e,
+            Err(e) => {
+                errs.push(format!("read entry in {}: {e}", src.display()));
+                continue;
+            }
+        };
+        let ft = match entry.file_type() {
+            Ok(ft) => ft,
+            Err(e) => {
+                errs.push(format!("type {}: {e}", entry.path().display()));
+                continue;
+            }
+        };
+        let src_path = entry.path();
         let dst_path = dst.join(entry.file_name());
-        if ft.is_dir() {
-            copy_dir_all(&entry.path(), &dst_path)?;
+        if ft.is_symlink() {
+            if let Err(e) = copy_symlink(&src_path, &dst_path) {
+                errs.push(format!("symlink {}: {e}", src_path.display()));
+            }
+        } else if ft.is_dir() {
+            if let Err(e) = copy_dir_recursive(&src_path, &dst_path, errs) {
+                errs.push(format!("dir {}: {e}", src_path.display()));
+            }
+        } else if ft.is_file() {
+            if let Err(e) = fs::copy(&src_path, &dst_path) {
+                errs.push(format!("file {}: {e}", src_path.display()));
+            }
         } else {
-            fs::copy(entry.path(), dst_path)?;
+            errs.push(format!("skip special {}", src_path.display()));
         }
     }
     Ok(())
 }
 
-pub fn move_path(src: &Path, dst: &Path) -> Result<()> {
+#[cfg(unix)]
+fn copy_symlink(src: &Path, dst: &Path) -> Result<()> {
+    use std::os::unix::fs::symlink;
+    let target = fs::read_link(src)?;
+    // If something already exists at dst (the worker passes a unique
+    // destination, but a recursive copy may revisit), refuse rather than
+    // dereference-and-clobber.
+    if dst.symlink_metadata().is_ok() {
+        anyhow::bail!("destination already exists");
+    }
+    symlink(target, dst)?;
+    Ok(())
+}
+
+#[cfg(not(unix))]
+fn copy_symlink(_src: &Path, _dst: &Path) -> Result<()> {
+    anyhow::bail!("symlink copy not supported on this platform")
+}
+
+/// Moves `src` to `dst`. Tries `rename(2)` first; if that fails (typically
+/// EXDEV on cross-device moves) falls back to a tolerant copy followed by a
+/// delete of the source. The source is only deleted if the copy was fully
+/// clean — partial copies leave the source intact so no data is lost.
+pub fn move_path(src: &Path, dst: &Path) -> Result<Vec<String>> {
     if let Some(parent) = dst.parent() {
         fs::create_dir_all(parent).ok();
     }
-    if fs::rename(src, dst).is_err() {
-        copy_path(src, dst)?;
+    if fs::rename(src, dst).is_ok() {
+        return Ok(Vec::new());
+    }
+    let errs = copy_path(src, dst)?;
+    if errs.is_empty() {
         delete_path(src, false)?;
     }
-    Ok(())
+    Ok(errs)
 }
 
 pub fn delete_path(path: &Path, use_trash: bool) -> Result<()> {

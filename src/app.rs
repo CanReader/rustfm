@@ -1003,9 +1003,17 @@ impl App {
             return Ok(());
         }
         match fs_ops::move_path(&entry.path, &dst) {
-            Ok(_) => {
+            Ok(inner) => {
                 self.refresh()?;
-                self.set_status(format!("renamed → {new_name}"), false);
+                if inner.is_empty() {
+                    self.set_status(format!("renamed → {new_name}"), false);
+                } else {
+                    let first = inner.into_iter().next().unwrap_or_default();
+                    self.set_status(
+                        format!("renamed → {new_name} (with errors — {first})"),
+                        true,
+                    );
+                }
             }
             Err(e) => self.set_status(format!("rename failed: {e}"), true),
         }
@@ -1185,7 +1193,7 @@ impl App {
                         }
                     }
                 }
-                TaskMsg::Done { id, ok, errs } => {
+                TaskMsg::Done { id, ok, errs, first_error } => {
                     let label = self
                         .progress
                         .as_ref()
@@ -1194,7 +1202,13 @@ impl App {
                         .unwrap_or_else(|| "task".into());
                     self.progress = None;
                     let _ = self.refresh();
-                    self.set_status(format!("{label}: {ok} ok, {errs} failed"), errs > 0);
+                    let mut text = format!("{label}: {ok} ok, {errs} failed");
+                    if let Some(err) = first_error {
+                        text.push_str(" — ");
+                        let trimmed: String = err.chars().take(120).collect();
+                        text.push_str(&trimmed);
+                    }
+                    self.set_status(text, errs > 0);
                 }
             }
         }

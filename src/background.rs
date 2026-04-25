@@ -25,7 +25,7 @@ impl Task {
 pub enum TaskMsg {
     Start { id: u64, label: String, total: u64 },
     Progress { id: u64, done: u64, current: String },
-    Done { id: u64, ok: usize, errs: usize },
+    Done { id: u64, ok: usize, errs: usize, first_error: Option<String> },
 }
 
 pub struct Worker {
@@ -65,6 +65,7 @@ fn worker_loop(rx: Receiver<Task>, tx: Sender<TaskMsg>) {
                 });
                 let mut ok = 0usize;
                 let mut errs = 0usize;
+                let mut first_error: Option<String> = None;
                 for (i, t) in targets.iter().enumerate() {
                     let _ = tx.send(TaskMsg::Progress {
                         id,
@@ -73,10 +74,15 @@ fn worker_loop(rx: Receiver<Task>, tx: Sender<TaskMsg>) {
                     });
                     match fs_ops::delete_path(t, use_trash) {
                         Ok(_) => ok += 1,
-                        Err(_) => errs += 1,
+                        Err(e) => {
+                            errs += 1;
+                            if first_error.is_none() {
+                                first_error = Some(format!("{}: {e}", display_name(t)));
+                            }
+                        }
                     }
                 }
-                let _ = tx.send(TaskMsg::Done { id, ok, errs });
+                let _ = tx.send(TaskMsg::Done { id, ok, errs, first_error });
             }
         }
     }
@@ -98,9 +104,13 @@ fn run_transfer(
     });
     let mut ok = 0usize;
     let mut errs = 0usize;
+    let mut first_error: Option<String> = None;
     for (i, src) in sources.iter().enumerate() {
         let Some(name) = src.file_name().map(|n| n.to_string_lossy().into_owned()) else {
             errs += 1;
+            if first_error.is_none() {
+                first_error = Some(format!("{}: invalid name", src.display()));
+            }
             continue;
         };
         let _ = tx.send(TaskMsg::Progress {
@@ -115,11 +125,30 @@ fn run_transfer(
             fs_ops::copy_path(src, &dst)
         };
         match res {
-            Ok(_) => ok += 1,
-            Err(_) => errs += 1,
+            Ok(inner) => {
+                if inner.is_empty() {
+                    ok += 1;
+                } else {
+                    // Partial: top-level item completed but had child errors.
+                    // Count it as ok (the user sees the destination) but
+                    // surface the first inner error so they know something
+                    // inside was skipped.
+                    ok += 1;
+                    errs += inner.len();
+                    if first_error.is_none() {
+                        first_error = inner.into_iter().next();
+                    }
+                }
+            }
+            Err(e) => {
+                errs += 1;
+                if first_error.is_none() {
+                    first_error = Some(format!("{name}: {e}"));
+                }
+            }
         }
     }
-    let _ = tx.send(TaskMsg::Done { id, ok, errs });
+    let _ = tx.send(TaskMsg::Done { id, ok, errs, first_error });
 }
 
 fn display_name(p: &Path) -> String {
