@@ -28,15 +28,59 @@ impl<'a> Opener<'a> {
         self.table.get(&ext)
     }
 
-    /// Primary entry point. Consults internal map first; otherwise delegates to the OS.
+    /// Primary entry point. Consults internal map first; otherwise, if the
+    /// file has its executable bit set, run it directly; otherwise delegate
+    /// to the OS default handler.
     pub fn open(&self, path: &Path) -> Result<OpenOutcome> {
         if let Some(template) = self.lookup(path) {
             run_template(template, path)?;
             return Ok(OpenOutcome::Internal);
         }
+        if is_executable(path) {
+            run_executable(path)?;
+            return Ok(OpenOutcome::Internal);
+        }
         open::that_detached(path).context("OS default opener failed")?;
         Ok(OpenOutcome::OsDefault)
     }
+}
+
+#[cfg(unix)]
+fn is_executable(path: &Path) -> bool {
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::metadata(path)
+        .map(|m| m.is_file() && (m.permissions().mode() & 0o111) != 0)
+        .unwrap_or(false)
+}
+
+#[cfg(not(unix))]
+fn is_executable(path: &Path) -> bool {
+    path.extension()
+        .and_then(|e| e.to_str())
+        .map(|e| matches!(e.to_ascii_lowercase().as_str(), "exe" | "bat" | "cmd" | "com"))
+        .unwrap_or(false)
+}
+
+fn run_executable(path: &Path) -> Result<()> {
+    let status = Command::new(path)
+        .stdin(Stdio::inherit())
+        .stdout(Stdio::inherit())
+        .stderr(Stdio::inherit())
+        .status()
+        .with_context(|| format!("executing {}", path.display()))?;
+    // open_current has already left the alternate screen, so anything the
+    // program printed is on the real terminal. Pause so the user can read
+    // it before Rustfm's TUI redraws over the output on return.
+    use std::io::{Read, Write};
+    let mut out = std::io::stdout();
+    let _ = writeln!(out);
+    let _ = write!(out, "[press Enter to return]");
+    let _ = out.flush();
+    let _ = std::io::stdin().read(&mut [0u8; 1]);
+    if !status.success() {
+        anyhow::bail!("exited with {status}");
+    }
+    Ok(())
 }
 
 fn run_template(template: &str, path: &Path) -> Result<()> {
