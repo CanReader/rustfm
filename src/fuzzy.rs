@@ -4,9 +4,14 @@ pub fn score(needle: &str, haystack: &str) -> Option<(i32, Vec<usize>)> {
     if needle.is_empty() {
         return Some((0, Vec::new()));
     }
-    let needle: Vec<char> = needle.chars().flat_map(|c| c.to_lowercase()).collect();
+    // Lowercase one-to-one (first lowercase char only) so `hay_lower` stays
+    // index-aligned with `hay`. flat_map would desync the two on characters
+    // whose lowercase form expands (e.g. 'İ' → "i\u{307}"), making the
+    // `hay[hi - 1]` word-boundary check below index out of bounds.
+    let lower1 = |c: char| c.to_lowercase().next().unwrap_or(c);
+    let needle: Vec<char> = needle.chars().map(lower1).collect();
     let hay: Vec<char> = haystack.chars().collect();
-    let hay_lower: Vec<char> = hay.iter().flat_map(|c| c.to_lowercase()).collect();
+    let hay_lower: Vec<char> = hay.iter().map(|c| lower1(*c)).collect();
 
     let mut indices = Vec::with_capacity(needle.len());
     let mut ni = 0;
