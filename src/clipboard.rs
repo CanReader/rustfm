@@ -13,11 +13,14 @@ pub fn copy_files(paths: &[impl AsRef<Path>]) -> Result<&'static str, String> {
     if paths.is_empty() {
         return Err("nothing to copy".into());
     }
-    let uri_list: String = paths
-        .iter()
-        .map(|p| path_to_uri(p.as_ref()))
-        .collect::<Vec<_>>()
-        .join("\n");
+    // RFC 2483 says `text/uri-list` lines are CRLF-terminated and the last
+    // line MUST also be terminated. Nautilus and some browsers reject a
+    // payload without a trailing newline, dropping the paste silently.
+    let mut uri_list = String::new();
+    for p in paths {
+        uri_list.push_str(&path_to_uri(p.as_ref()));
+        uri_list.push_str("\r\n");
+    }
     let plain: String = paths
         .iter()
         .map(|p| p.as_ref().display().to_string())
