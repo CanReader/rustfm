@@ -22,9 +22,19 @@ mime_guess = "2"
 trash = "5"
 ratatui-image = "4"
 image = "0.25"
+syntect = { version = "5", default-features = false, features = ["default-fancy"] }
 
 [profile.release]
 lto = true
 codegen-units = 1
 strip = true
+opt-level = 3
+
+# `cargo run` (dev) must stay usable: syntax highlighting, image decoding,
+# and regex engines are unusably slow unoptimized. Optimize all dependencies
+# even in dev builds; only rustfm's own crate keeps fast debug compilation.
+[profile.dev]
+opt-level = 1
+
+[profile.dev.package."*"]
 opt-level = 3
