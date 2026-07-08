@@ -16,6 +16,7 @@ pub struct Entry {
     pub size: u64,
     pub modified: Option<SystemTime>,
     pub readonly: bool,
+    pub is_exec: bool,
     pub ext_lower: Option<String>,
 }
 
@@ -25,8 +26,8 @@ impl Entry {
             .file_name()
             .map(|n| n.to_string_lossy().into_owned())
             .unwrap_or_else(|| path.to_string_lossy().into_owned());
-        let meta = fs::symlink_metadata(&path)
-            .with_context(|| format!("stat {}", path.display()))?;
+        let meta =
+            fs::symlink_metadata(&path).with_context(|| format!("stat {}", path.display()))?;
         let ft = meta.file_type();
         let is_symlink = ft.is_symlink();
         let is_dir = if is_symlink {
@@ -39,6 +40,13 @@ impl Entry {
             .and_then(|e| e.to_str())
             .map(|s| s.to_ascii_lowercase());
         let name_lower = name.to_ascii_lowercase();
+        #[cfg(unix)]
+        let is_exec = {
+            use std::os::unix::fs::PermissionsExt;
+            !is_dir && (meta.permissions().mode() & 0o111) != 0
+        };
+        #[cfg(not(unix))]
+        let is_exec = false;
         Ok(Self {
             name,
             name_lower,
@@ -48,6 +56,7 @@ impl Entry {
             size: meta.len(),
             modified: meta.modified().ok(),
             readonly: meta.permissions().readonly(),
+            is_exec,
             ext_lower,
         })
     }
@@ -94,7 +103,10 @@ pub fn sort_entries(entries: &mut [Entry], mode: SortMode, reverse: bool, dirs_f
             SortMode::Name => a.name_lower.cmp(&b.name_lower),
             SortMode::Size => a.size.cmp(&b.size),
             SortMode::Mtime => a.modified.cmp(&b.modified),
-            SortMode::Ext => a.ext_lower.cmp(&b.ext_lower).then(a.name_lower.cmp(&b.name_lower)),
+            SortMode::Ext => a
+                .ext_lower
+                .cmp(&b.ext_lower)
+                .then(a.name_lower.cmp(&b.name_lower)),
         };
         if reverse {
             ord.reverse()
@@ -110,8 +122,7 @@ pub fn sort_entries(entries: &mut [Entry], mode: SortMode, reverse: bool, dirs_f
 /// a fully clean copy. Top-level failures (e.g. unable to create the root
 /// destination directory) still propagate as `Err`.
 pub fn copy_path(src: &Path, dst: &Path) -> Result<Vec<String>> {
-    let meta = fs::symlink_metadata(src)
-        .with_context(|| format!("stat {}", src.display()))?;
+    let meta = fs::symlink_metadata(src).with_context(|| format!("stat {}", src.display()))?;
     let ft = meta.file_type();
     let mut errs = Vec::new();
     if ft.is_symlink() {
@@ -121,6 +132,19 @@ pub fn copy_path(src: &Path, dst: &Path) -> Result<Vec<String>> {
         copy_symlink(src, dst)
             .with_context(|| format!("symlink {} -> {}", src.display(), dst.display()))?;
     } else if ft.is_dir() {
+        // Refuse to recurse a directory into a destination that lives
+        // inside the source. Without this guard, paste-into-self (e.g.
+        // yank /foo, navigate to /foo, paste — dest becomes /foo/foo_1)
+        // would enumerate the freshly-created destination as part of the
+        // source's children and copy it back into itself, fanning out
+        // until the disk fills.
+        if dst_is_inside_src(src, dst) {
+            anyhow::bail!(
+                "refusing to copy {} into a subdirectory of itself ({})",
+                src.display(),
+                dst.display()
+            );
+        }
         copy_dir_recursive(src, dst, &mut errs)?;
     } else {
         if let Some(parent) = dst.parent() {
@@ -132,9 +156,30 @@ pub fn copy_path(src: &Path, dst: &Path) -> Result<Vec<String>> {
     Ok(errs)
 }
 
+/// Returns true if `dst` is `src` itself or a path inside `src`. We
+/// canonicalize both sides because either could contain `..`, symlinks, or
+/// distinct-but-equivalent forms (`/tmp` vs `/private/tmp` on macOS).
+/// `dst` may not exist yet, so we canonicalize its existing ancestor and
+/// compare.
+fn dst_is_inside_src(src: &Path, dst: &Path) -> bool {
+    let Ok(src_abs) = src.canonicalize() else {
+        return false;
+    };
+    let mut probe = dst.to_path_buf();
+    let dst_abs = loop {
+        if let Ok(p) = probe.canonicalize() {
+            break p;
+        }
+        match probe.parent() {
+            Some(p) if p != probe.as_path() => probe = p.to_path_buf(),
+            _ => return false,
+        }
+    };
+    dst_abs == src_abs || dst_abs.starts_with(&src_abs)
+}
+
 fn copy_dir_recursive(src: &Path, dst: &Path, errs: &mut Vec<String>) -> Result<()> {
-    fs::create_dir_all(dst)
-        .with_context(|| format!("mkdir {}", dst.display()))?;
+    fs::create_dir_all(dst).with_context(|| format!("mkdir {}", dst.display()))?;
     let rd = match fs::read_dir(src) {
         Ok(rd) => rd,
         Err(e) => {
@@ -201,6 +246,12 @@ fn copy_symlink(_src: &Path, _dst: &Path) -> Result<()> {
 /// EXDEV on cross-device moves) falls back to a tolerant copy followed by a
 /// delete of the source. The source is only deleted if the copy was fully
 /// clean — partial copies leave the source intact so no data is lost.
+///
+/// If the copy succeeds but the source-delete fails (e.g. permission denied
+/// on a child file), we surface that as an `errs` entry rather than
+/// returning `Err`: the destination is already populated, and `Err` would
+/// make the caller treat the whole move as a failure and discard the
+/// duplication-warning the user needs to see.
 pub fn move_path(src: &Path, dst: &Path) -> Result<Vec<String>> {
     if let Some(parent) = dst.parent() {
         fs::create_dir_all(parent).ok();
@@ -208,9 +259,15 @@ pub fn move_path(src: &Path, dst: &Path) -> Result<Vec<String>> {
     if fs::rename(src, dst).is_ok() {
         return Ok(Vec::new());
     }
-    let errs = copy_path(src, dst)?;
+    let mut errs = copy_path(src, dst)?;
     if errs.is_empty() {
-        delete_path(src, false)?;
+        if let Err(e) = delete_path(src, false) {
+            errs.push(format!(
+                "copied to {} but could not remove source {}: {e}",
+                dst.display(),
+                src.display()
+            ));
+        }
     }
     Ok(errs)
 }
@@ -264,6 +321,9 @@ pub fn create_file(path: &Path) -> Result<()> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent).ok();
     }
-    fs::OpenOptions::new().create_new(true).write(true).open(path)?;
+    fs::OpenOptions::new()
+        .create_new(true)
+        .write(true)
+        .open(path)?;
     Ok(())
 }
