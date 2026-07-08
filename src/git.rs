@@ -59,13 +59,6 @@ pub struct FileStatus {
 }
 
 impl FileStatus {
-    pub fn clean() -> Self {
-        Self {
-            index: GitState::Clean,
-            worktree: GitState::Clean,
-        }
-    }
-
     pub fn is_dirty(&self) -> bool {
         self.index.is_dirty() || self.worktree.is_dirty()
     }
@@ -116,11 +109,7 @@ pub fn fetch(cwd: &Path) -> Option<GitInfo> {
     if !root_out.status.success() {
         return None;
     }
-    let root = PathBuf::from(
-        String::from_utf8_lossy(&root_out.stdout)
-            .trim()
-            .to_string(),
-    );
+    let root = PathBuf::from(String::from_utf8_lossy(&root_out.stdout).trim().to_string());
     if root.as_os_str().is_empty() {
         return None;
     }
@@ -167,6 +156,12 @@ fn parse_status_branch(root: &Path) -> ParsedStatus {
         conflicts: 0,
         status: HashMap::new(),
     };
+    // `-z` emits NUL-terminated records with raw (un-quoted) paths. Without
+    // it, git applies `core.quotePath` to non-ASCII paths and emits e.g.
+    // `?? "\304\260\303\247indekiler.txt"`, which our naïve splitter would
+    // join with `root` literally — the resulting key would never match the
+    // real file path on disk and the entry would silently fall out of the
+    // status map. `-z` makes the parser locale-clean.
     let out = Command::new("git")
         .arg("-C")
         .arg(root)
@@ -174,6 +169,7 @@ fn parse_status_branch(root: &Path) -> ParsedStatus {
         .arg("--branch")
         .arg("--porcelain=v1")
         .arg("--ignored")
+        .arg("-z")
         .output();
     let Ok(out) = out else {
         return result;
@@ -181,24 +177,41 @@ fn parse_status_branch(root: &Path) -> ParsedStatus {
     if !out.status.success() {
         return result;
     }
-    let text = String::from_utf8_lossy(&out.stdout);
 
-    for (i, line) in text.lines().enumerate() {
-        if i == 0 && line.starts_with("## ") {
-            parse_branch_header(&line[3..], &mut result);
+    // With -z, records are separated by NUL bytes. Renames/copies emit two
+    // records: "XY <space> newpath\0origpath\0". The branch header (if any)
+    // is also a single NUL-terminated record at the start.
+    let recs: Vec<&[u8]> = out.stdout.split(|b| *b == 0).collect();
+    let mut idx = 0;
+    if let Some(first) = recs.first() {
+        if first.starts_with(b"## ") {
+            let header = String::from_utf8_lossy(&first[3..]);
+            parse_branch_header(&header, &mut result);
+            idx = 1;
+        }
+    }
+
+    while idx < recs.len() {
+        let rec = recs[idx];
+        idx += 1;
+        if rec.len() < 3 {
             continue;
         }
-        if line.len() < 3 {
-            continue;
+        let x = rec[0] as char;
+        let y = rec[1] as char;
+        // Skip the byte at index 2 (always a space).
+        let path_bytes = &rec[3..];
+        // For renames/copies the next record holds the original path; we
+        // still want the *new* path keyed (which is in this record).
+        let is_rename_or_copy = matches!(x, 'R' | 'C') || matches!(y, 'R' | 'C');
+        if is_rename_or_copy {
+            // Skip the orig-path record so it isn't reparsed as its own entry.
+            idx += 1;
         }
-        let bytes = line.as_bytes();
-        let x = bytes[0] as char;
-        let y = bytes[1] as char;
-        let rest = &line[3..];
-        let path_str = match rest.split_once(" -> ") {
-            Some((_, new)) => new,
-            None => rest,
-        };
+        let path_os = bytes_to_pathbuf(path_bytes);
+        let path_str = path_os.to_string_lossy();
+        let trimmed = path_str.trim_end_matches('/');
+
         let fs = if x == '?' && y == '?' {
             result.untracked += 1;
             FileStatus {
@@ -211,12 +224,12 @@ fn parse_status_branch(root: &Path) -> ParsedStatus {
                 worktree: GitState::Ignored,
             }
         } else {
-            let idx = map_code(x);
+            let index = map_code(x);
             let wt = map_code(y);
-            if matches!(idx, GitState::Conflict) || matches!(wt, GitState::Conflict) {
+            if matches!(index, GitState::Conflict) || matches!(wt, GitState::Conflict) {
                 result.conflicts += 1;
             } else {
-                if idx.is_dirty() {
+                if index.is_dirty() {
                     result.staged += 1;
                 }
                 if wt.is_dirty() {
@@ -224,11 +237,11 @@ fn parse_status_branch(root: &Path) -> ParsedStatus {
                 }
             }
             FileStatus {
-                index: idx,
+                index,
                 worktree: wt,
             }
         };
-        let abs = root.join(path_str.trim_end_matches('/'));
+        let abs = root.join(trimmed);
         let merged = match result.status.get(&abs) {
             Some(existing) => existing.merged_with(fs),
             None => fs,
@@ -250,6 +263,18 @@ fn parse_status_branch(root: &Path) -> ParsedStatus {
         }
     }
     result
+}
+
+#[cfg(unix)]
+fn bytes_to_pathbuf(bytes: &[u8]) -> PathBuf {
+    use std::ffi::OsStr;
+    use std::os::unix::ffi::OsStrExt;
+    PathBuf::from(OsStr::from_bytes(bytes))
+}
+
+#[cfg(not(unix))]
+fn bytes_to_pathbuf(bytes: &[u8]) -> PathBuf {
+    PathBuf::from(String::from_utf8_lossy(bytes).into_owned())
 }
 
 fn parse_branch_header(rest: &str, result: &mut ParsedStatus) {
@@ -330,10 +355,7 @@ pub fn stage(root: &Path, paths: &[PathBuf]) -> Result<()> {
     }
     let out = cmd.output().context("git add")?;
     if !out.status.success() {
-        bail!(
-            "git add: {}",
-            String::from_utf8_lossy(&out.stderr).trim().to_string()
-        );
+        bail!("git add: {}", String::from_utf8_lossy(&out.stderr).trim());
     }
     Ok(())
 }
@@ -355,7 +377,7 @@ pub fn unstage(root: &Path, paths: &[PathBuf]) -> Result<()> {
     if !out.status.success() {
         bail!(
             "git restore --staged: {}",
-            String::from_utf8_lossy(&out.stderr).trim().to_string()
+            String::from_utf8_lossy(&out.stderr).trim()
         );
     }
     Ok(())
@@ -374,7 +396,7 @@ pub fn discard(root: &Path, paths: &[PathBuf]) -> Result<()> {
     if !out.status.success() {
         bail!(
             "git restore: {}",
-            String::from_utf8_lossy(&out.stderr).trim().to_string()
+            String::from_utf8_lossy(&out.stderr).trim()
         );
     }
     Ok(())
@@ -466,24 +488,4 @@ pub fn run_raw(cwd: &Path, args: &[String]) -> Result<Vec<String>> {
         bail!("git {} failed", args.join(" "));
     }
     Ok(lines)
-}
-
-pub fn recent_log(root: &Path, path: Option<&Path>, limit: u32) -> Vec<String> {
-    let mut cmd = Command::new("git");
-    cmd.arg("-C")
-        .arg(root)
-        .arg("--no-pager")
-        .arg("log")
-        .arg(format!("-n{limit}"))
-        .arg("--pretty=format:%h %s");
-    if let Some(p) = path {
-        cmd.arg("--").arg(p);
-    }
-    match cmd.output() {
-        Ok(o) if o.status.success() => String::from_utf8_lossy(&o.stdout)
-            .lines()
-            .map(|s| s.to_string())
-            .collect(),
-        _ => Vec::new(),
-    }
 }
