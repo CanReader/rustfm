@@ -8,24 +8,40 @@ use crate::fs_ops;
 
 #[derive(Debug)]
 pub enum Task {
-    Copy { id: u64, sources: Vec<PathBuf>, dest_dir: PathBuf },
-    Move { id: u64, sources: Vec<PathBuf>, dest_dir: PathBuf },
-    Delete { id: u64, targets: Vec<PathBuf>, use_trash: bool },
-}
-
-impl Task {
-    pub fn id(&self) -> u64 {
-        match self {
-            Task::Copy { id, .. } | Task::Move { id, .. } | Task::Delete { id, .. } => *id,
-        }
-    }
+    Copy {
+        id: u64,
+        sources: Vec<PathBuf>,
+        dest_dir: PathBuf,
+    },
+    Move {
+        id: u64,
+        sources: Vec<PathBuf>,
+        dest_dir: PathBuf,
+    },
+    Delete {
+        id: u64,
+        targets: Vec<PathBuf>,
+        use_trash: bool,
+    },
 }
 
 #[derive(Debug)]
 pub enum TaskMsg {
-    Start { id: u64, label: String, total: u64 },
-    Progress { id: u64, done: u64, current: String },
-    Done { id: u64, ok: usize, errs: usize, first_error: Option<String> },
+    Start {
+        id: u64,
+        total: u64,
+    },
+    Progress {
+        id: u64,
+        done: u64,
+        current: String,
+    },
+    Done {
+        id: u64,
+        ok: usize,
+        errs: usize,
+        first_error: Option<String>,
+    },
 }
 
 pub struct Worker {
@@ -49,20 +65,27 @@ impl Worker {
 fn worker_loop(rx: Receiver<Task>, tx: Sender<TaskMsg>) {
     while let Ok(task) = rx.recv() {
         match task {
-            Task::Copy { id, sources, dest_dir } => {
-                run_transfer(id, sources, dest_dir, &tx, false, "copy");
+            Task::Copy {
+                id,
+                sources,
+                dest_dir,
+            } => {
+                run_transfer(id, sources, dest_dir, &tx, false);
             }
-            Task::Move { id, sources, dest_dir } => {
-                run_transfer(id, sources, dest_dir, &tx, true, "move");
+            Task::Move {
+                id,
+                sources,
+                dest_dir,
+            } => {
+                run_transfer(id, sources, dest_dir, &tx, true);
             }
-            Task::Delete { id, targets, use_trash } => {
-                let label = if use_trash { "trash" } else { "delete" };
+            Task::Delete {
+                id,
+                targets,
+                use_trash,
+            } => {
                 let total = targets.len() as u64;
-                let _ = tx.send(TaskMsg::Start {
-                    id,
-                    label: label.into(),
-                    total,
-                });
+                let _ = tx.send(TaskMsg::Start { id, total });
                 let mut ok = 0usize;
                 let mut errs = 0usize;
                 let mut first_error: Option<String> = None;
@@ -82,7 +105,12 @@ fn worker_loop(rx: Receiver<Task>, tx: Sender<TaskMsg>) {
                         }
                     }
                 }
-                let _ = tx.send(TaskMsg::Done { id, ok, errs, first_error });
+                let _ = tx.send(TaskMsg::Done {
+                    id,
+                    ok,
+                    errs,
+                    first_error,
+                });
             }
         }
     }
@@ -94,14 +122,9 @@ fn run_transfer(
     dest_dir: PathBuf,
     tx: &Sender<TaskMsg>,
     is_move: bool,
-    label: &str,
 ) {
     let total = sources.len() as u64;
-    let _ = tx.send(TaskMsg::Start {
-        id,
-        label: label.into(),
-        total,
-    });
+    let _ = tx.send(TaskMsg::Start { id, total });
     let mut ok = 0usize;
     let mut errs = 0usize;
     let mut first_error: Option<String> = None;
@@ -118,6 +141,13 @@ fn run_transfer(
             done: i as u64,
             current: name.clone(),
         });
+        // Moving a file into the directory it already lives in is a no-op.
+        // Without this check, unique_destination sees the source itself at
+        // the destination path and "moves" a.txt to a_1.txt.
+        if is_move && src.parent() == Some(dest_dir.as_path()) {
+            ok += 1;
+            continue;
+        }
         let dst = fs_ops::unique_destination(&dest_dir, &name);
         let res = if is_move {
             fs_ops::move_path(src, &dst)
@@ -148,7 +178,12 @@ fn run_transfer(
             }
         }
     }
-    let _ = tx.send(TaskMsg::Done { id, ok, errs, first_error });
+    let _ = tx.send(TaskMsg::Done {
+        id,
+        ok,
+        errs,
+        first_error,
+    });
 }
 
 fn display_name(p: &Path) -> String {
