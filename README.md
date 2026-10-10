@@ -118,3 +118,7 @@ TOML config at `~/.config/rustfm/config.toml`, auto-generated on first run. High
 - `[theme]` — "Catppuccin Black" by default (Mocha accents on pure black). Every color is a named field taking `#rrggbb` or a named color, so any palette (Gruvbox, Nord, …) is a quick edit away. `code_syntax_highlight` selects the syntect theme for code previews.
 
 Pinned directories are stored separately in `~/.config/rustfm/pinned.toml`.
+
+## License
+
+[MIT](LICENSE)
