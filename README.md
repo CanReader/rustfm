@@ -58,7 +58,7 @@ A fast, modern terminal file manager written in Rust: sidebar with pinned dirs a
 ## Installation
 
 ```bash
-git clone https://github.com/<your-user>/rustfm
+git clone https://github.com/CanReader/rustfm
 cd rustfm
 cargo build --release
 install -m 755 target/release/rustfm ~/.local/bin/rustfm
